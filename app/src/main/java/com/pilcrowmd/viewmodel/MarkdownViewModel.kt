@@ -1315,6 +1315,11 @@ constructor(
     fun newDocumentWithContent(
         initialContent: String,
         displayName: String = NEW_DOCUMENT_NAME,
+    ) = newDocumentWithContent(initialContent, displayName, ReplacePolicy.IF_CLEAN)
+
+    internal fun newDocumentWithContent(
+        initialContent: String,
+        displayName: String = NEW_DOCUMENT_NAME,
         policy: ReplacePolicy = ReplacePolicy.IF_CLEAN,
     ) {
         viewModelScope.launch {
