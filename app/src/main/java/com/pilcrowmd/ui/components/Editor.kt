@@ -332,10 +332,12 @@ internal fun setupTextMateHighlighting(
 
         // Load the appropriate TextMate theme (dark or light) based on themeMode
         val themeRegistry = io.github.rosemoe.sora.langs.textmate.registry.ThemeRegistry.getInstance()
-        val themeName = when (themeMode) {
-            ThemeMode.DARK -> "md-dark"
-            ThemeMode.LIGHT -> "md-light"
+        val isDark = when (themeMode) {
+            ThemeMode.DARK -> true
+            ThemeMode.LIGHT -> false
+            ThemeMode.AUTO -> (context.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
         }
+        val themeName = if (isDark) "md-dark" else "md-light"
         val themeFileName = "$themeName.json"
         val themeInputStream = fileProvider.tryGetInputStream("textmate/$themeFileName")
         if (themeInputStream != null) {

@@ -38,7 +38,16 @@ class PilcrowTtsManager(private val context: Context) {
         }
 
         if (existing == null) {
-            tts = TextToSpeech(context.applicationContext) { status ->
+            val defaultEngine = try {
+                android.provider.Settings.Secure.getString(
+                    context.contentResolver,
+                    android.provider.Settings.Secure.TTS_DEFAULT_SYNTH,
+                )
+            } catch (e: Exception) {
+                null
+            }
+
+            val listener = TextToSpeech.OnInitListener { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     isInitialized = true
                     tts?.let { engine ->
@@ -82,6 +91,13 @@ class PilcrowTtsManager(private val context: Context) {
                     _isSpeaking.value = false
                     pendingText = null
                 }
+            }
+
+            tts = if (!defaultEngine.isNullOrBlank()) {
+                Log.d(TAG, "Initializing TextToSpeech with preferred engine: $defaultEngine")
+                TextToSpeech(context.applicationContext, listener, defaultEngine)
+            } else {
+                TextToSpeech(context.applicationContext, listener)
             }
         }
     }

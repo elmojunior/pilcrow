@@ -6,4 +6,5 @@ package com.pilcrowmd.domain.model
 enum class ThemeMode {
     DARK,
     LIGHT,
+    AUTO,
 }

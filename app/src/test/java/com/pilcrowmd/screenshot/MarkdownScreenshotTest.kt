@@ -44,6 +44,7 @@ data class ScreenshotCase(val sample: MarkdownSample, val fontScale: Float, val 
     val themeSuffix: String get() = when (themeMode) {
         ThemeMode.DARK -> "dark"
         ThemeMode.LIGHT -> "light"
+        ThemeMode.AUTO -> "auto"
     }
     override fun toString(): String = "${sample.name}@${scalePct}_$themeSuffix"
 }
@@ -113,6 +114,7 @@ class MarkdownScreenshotTest(private val case: ScreenshotCase) {
             val colorScheme = when (case.themeMode) {
                 ThemeMode.DARK -> DarkColorScheme
                 ThemeMode.LIGHT -> LightColorScheme
+                ThemeMode.AUTO -> DarkColorScheme
             }
 
             Box(

@@ -140,6 +140,7 @@ class WelcomeScreenshotTest(private val themeMode: ThemeMode) {
     private fun themeSuffix(): String = when (themeMode) {
         ThemeMode.DARK -> "dark"
         ThemeMode.LIGHT -> "light"
+        ThemeMode.AUTO -> "auto"
     }
 
     /**
@@ -169,6 +170,7 @@ class WelcomeScreenshotTest(private val themeMode: ThemeMode) {
         val colorScheme = when (themeMode) {
             ThemeMode.DARK -> DarkColorScheme
             ThemeMode.LIGHT -> LightColorScheme
+            ThemeMode.AUTO -> DarkColorScheme
         }
 
         composeRule.setContent {

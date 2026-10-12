@@ -46,12 +46,14 @@ class FormattingBarScreenshotTest(private val themeMode: ThemeMode) {
     private fun suffix() = when (themeMode) {
         ThemeMode.DARK -> "dark"
         ThemeMode.LIGHT -> "light"
+        ThemeMode.AUTO -> "auto"
     }
 
     private fun show() {
         val scheme = when (themeMode) {
             ThemeMode.DARK -> DarkColorScheme
             ThemeMode.LIGHT -> LightColorScheme
+            ThemeMode.AUTO -> DarkColorScheme
         }
         composeRule.setContent {
             Box(

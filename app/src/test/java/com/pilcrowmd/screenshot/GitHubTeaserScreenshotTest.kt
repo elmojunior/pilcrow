@@ -64,11 +64,13 @@ class GitHubTeaserScreenshotTest(private val themeMode: ThemeMode) {
     private fun colorScheme() = when (themeMode) {
         ThemeMode.DARK -> DarkColorScheme
         ThemeMode.LIGHT -> LightColorScheme
+        ThemeMode.AUTO -> DarkColorScheme
     }
 
     private fun suffix() = when (themeMode) {
         ThemeMode.DARK -> "dark"
         ThemeMode.LIGHT -> "light"
+        ThemeMode.AUTO -> "auto"
     }
 
     @Test

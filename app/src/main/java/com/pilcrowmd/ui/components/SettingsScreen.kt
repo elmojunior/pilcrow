@@ -38,6 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.BrightnessAuto
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.LightMode
@@ -174,6 +175,12 @@ fun SettingsScreen(
                     label = "Light",
                     selected = themeMode == ThemeMode.LIGHT,
                     onClick = { onThemeSelected(ThemeMode.LIGHT) },
+                )
+                ThemeOption(
+                    icon = Icons.Outlined.BrightnessAuto,
+                    label = "Auto",
+                    selected = themeMode == ThemeMode.AUTO,
+                    onClick = { onThemeSelected(ThemeMode.AUTO) },
                 )
             }
         }

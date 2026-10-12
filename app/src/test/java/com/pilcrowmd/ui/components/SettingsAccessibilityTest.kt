@@ -104,6 +104,15 @@ class SettingsAccessibilityTest {
         show(themeMode = ThemeMode.LIGHT)
         composeRule.onNode(hasText("Light") and isRadio).assertIsSelected()
         composeRule.onNode(hasText("Dark") and isRadio).assertIsNotSelected()
+        composeRule.onNode(hasText("Auto") and isRadio).assertIsNotSelected()
+    }
+
+    @Test
+    fun autoThemeOptionIsSelectedWhenThemeModeIsAuto() {
+        show(themeMode = ThemeMode.AUTO)
+        composeRule.onNode(hasText("Auto") and isRadio).assertIsSelected()
+        composeRule.onNode(hasText("Light") and isRadio).assertIsNotSelected()
+        composeRule.onNode(hasText("Dark") and isRadio).assertIsNotSelected()
     }
 
     @Test

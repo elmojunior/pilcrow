@@ -55,6 +55,7 @@ class SettingsLargeFontScreenshotTest(private val themeMode: ThemeMode) {
         val (scheme, suffix) = when (themeMode) {
             ThemeMode.DARK -> DarkColorScheme to "dark"
             ThemeMode.LIGHT -> LightColorScheme to "light"
+            ThemeMode.AUTO -> DarkColorScheme to "auto"
         }
         composeRule.setContent {
             Box(Modifier.fillMaxSize().background(scheme.primaryBackground)) {

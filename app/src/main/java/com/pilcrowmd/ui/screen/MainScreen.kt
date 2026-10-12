@@ -283,7 +283,13 @@ fun MainScreen(
     // bars get the same colour the old setters gave them at every API level. A fixed light/dark
     // style leaves the 3-button nav-bar contrast scrim off, as Play 1.0.11 showed; re-enabling it
     // painted a light band over the TOC drawer's scrim (NEW-37a).
-    val lightSystemBars = themeMode.value == ThemeMode.LIGHT
+    val systemInDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val isDark = when (themeMode.value) {
+        ThemeMode.DARK -> true
+        ThemeMode.LIGHT -> false
+        ThemeMode.AUTO -> systemInDark
+    }
+    val lightSystemBars = !isDark
     val systemBarColor = (if (lightSystemBars) LightColorScheme else DarkColorScheme).primaryBackground
     androidx.compose.runtime.LaunchedEffect(lightSystemBars) {
         val activity = context as? ComponentActivity ?: return@LaunchedEffect
@@ -582,10 +588,7 @@ fun MainScreen(
     // status bar and above the nav bar (API 35 enforces edge-to-edge — without this the
     // toolbar renders under the system clock/battery and its controls are unreachable).
     // The horizontal display-cutout padding keeps text out of the camera hole in landscape (NEW-37b).
-    val activeColorScheme = when (themeMode.value) {
-        ThemeMode.DARK -> DarkColorScheme
-        ThemeMode.LIGHT -> LightColorScheme
-    }
+    val activeColorScheme = if (isDark) DarkColorScheme else LightColorScheme
     ThemedNavigationDrawer(
         colorScheme = activeColorScheme,
         drawerState = drawerState,
@@ -925,7 +928,7 @@ fun MainScreen(
                                             lineNumbersEnabled = lineNumbersEnabled.value,
                                             fontScale = editorFontScale.value,
                                             fontSet = fontSet,
-                                            themeMode = themeMode.value,
+                                            themeMode = if (isDark) ThemeMode.DARK else ThemeMode.LIGHT,
                                             plainText = plainToggleAvailable.value,
                                             scrollPosition = editorScroll.value,
                                             onScrollChanged = { position ->

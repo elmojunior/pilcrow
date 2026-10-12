@@ -9,6 +9,13 @@
          feature performs network I/O — the reader/editor are fully offline. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Android 11+ (API 30+) package visibility declaration to discover and bind to user-installed TTS engines -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:name=".PilcrowApplication"
         android:allowBackup="true"
