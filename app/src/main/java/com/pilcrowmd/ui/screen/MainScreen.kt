@@ -567,13 +567,12 @@ fun MainScreen(
             saveAsLauncher.launch("Copy of ${baseName ?: "document"}.md")
         }
     }
-    // Documents that cannot be saved in place, so every Save routes to Save-As: a transient doc
-    // (read-only "Open with"), a never-saved one (M-91), and one read from a file that is not UTF-8
-    // (NEW-12 — saving it in place would rewrite the file in another encoding). The ViewModel
-    // refuses each of these too rather than trusting this routing (Safeguard 1).
+    // Documents that cannot be saved in place, so Save routes to Save-As:
+    // a never-saved document (M-91) and one read from a file that is not UTF-8
+    // (NEW-12 — saving it in place would rewrite the file in another encoding).
     val savesOnlyAsCopy = {
         val doc = currentDocument.value
-        transient.value || doc?.isUnsaved == true || doc?.notUtf8 == true
+        doc?.isUnsaved == true || doc?.notUtf8 == true
     }
     // Rescue a stranded slot: route the next picker result to rescueStrandedSlot(slotKey).
     val launchRescue = { slot: com.pilcrowmd.repository.StrandedSlot ->
@@ -1018,6 +1017,35 @@ fun MainScreen(
                         },
                         dismissButton = {
                             TextButton(onClick = { viewModel.discardAndOpenPending() }) {
+                                Text("Discard", color = mdColors().secondaryText)
+                            }
+                        },
+                    )
+                }
+
+                // Warm-intent text share while the current file has unsaved edits.
+                val pendingSharedText = viewModel.pendingSharedText.collectAsStateWithLifecycle()
+                if (pendingSharedText.value != null) {
+                    AlertDialog(
+                        onDismissRequest = { viewModel.cancelPendingSharedText() },
+                        containerColor = mdColors().secondarySurface,
+                        titleContentColor = mdColors().primaryText,
+                        textContentColor = mdColors().secondaryText,
+                        title = { Text("Unsaved changes") },
+                        text = { Text("Open shared text in a new file? Save your current edits first, or discard them.") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                if (savesOnlyAsCopy()) {
+                                    launchSaveAs()
+                                } else {
+                                    viewModel.saveAndOpenPendingSharedText()
+                                }
+                            }) {
+                                Text("Save", color = mdColors().primaryText)
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { viewModel.discardAndOpenPendingSharedText() }) {
                                 Text("Discard", color = mdColors().secondaryText)
                             }
                         },

@@ -226,6 +226,7 @@ internal class DocumentSlot {
         val current = _document.value
         if (current == null || current.id != expected) return
         originalContent = savedContent
+        _transient.value = false
         if (current.content == savedContent) _document.value = current.copy(dirty = false)
     }
 

@@ -29,7 +29,7 @@ class DefaultAppContainer(private val appContext: Context) : AppContainer {
     override val fileRepository: FileRepository by lazy {
         // noBackupFilesDir: durable and non-evictable, so the crash-recovery write-ahead log
         // survives storage pressure (cacheDir can be wiped by the OS) and is not cloud-backed up.
-        LocalFileRepository(appContext.contentResolver, appContext.noBackupFilesDir)
+        LocalFileRepository(appContext.contentResolver, appContext.noBackupFilesDir, context = appContext)
     }
 
     /**

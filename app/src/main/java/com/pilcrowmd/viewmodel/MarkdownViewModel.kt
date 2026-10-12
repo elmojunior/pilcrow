@@ -277,6 +277,10 @@ constructor(
     private val _pendingOpenUri = MutableStateFlow<Uri?>(null)
     val pendingOpenUri: StateFlow<Uri?> = _pendingOpenUri.asStateFlow()
 
+    // Shared text arriving from an intent while another dirty file is open
+    private val _pendingSharedText = MutableStateFlow<String?>(null)
+    val pendingSharedText: StateFlow<String?> = _pendingSharedText.asStateFlow()
+
     // M-126: a load failure earns a PERSISTENT message only when it leaves the user with nothing
     // on screen. That is decided at the instant the load fails, because only then is it known
     // whether a document was open (a message stored while a document was open would surface, stale,
@@ -640,7 +644,7 @@ constructor(
         when {
             current?.uri == uri -> return // already viewing this file
             current?.dirty == true -> _pendingOpenUri.value = uri // confirm before discarding
-            else -> loadFile(uri) // IF_CLEAN: typing during the load still reaches the prompt (M-180)
+            else -> open(uri, ReplacePolicy.IF_CLEAN, takePermission = true)
         }
     }
 
@@ -653,7 +657,7 @@ constructor(
     fun discardAndOpenPending() {
         val uri = _pendingOpenUri.value ?: return
         _pendingOpenUri.value = null
-        open(uri, ReplacePolicy.DISCARD)
+        open(uri, ReplacePolicy.DISCARD, takePermission = true)
     }
 
     /**
@@ -689,7 +693,58 @@ constructor(
                     slot.markSaved(doc.id, doc.content)
                 }
                 _pendingOpenUri.value = null
-                loadFile(uri)
+                open(uri, ReplacePolicy.IF_CLEAN, takePermission = true)
+            }
+        }
+    }
+
+    /**
+     * Entry point for text shared via ACTION_SEND (share sheet).
+     * If the current document has unsaved edits, prompts to save or discard first.
+     * Otherwise immediately opens a new document in the editor populated with the shared text.
+     */
+    fun openSharedText(text: String) {
+        val current = slot.document.value
+        if (current?.dirty == true) {
+            _pendingSharedText.value = text
+        } else {
+            newDocumentWithContent(text)
+        }
+    }
+
+    /** Dismiss the pending shared text prompt, keeping the current document. */
+    fun cancelPendingSharedText() {
+        _pendingSharedText.value = null
+    }
+
+    /** Discard current unsaved edits and open the pending shared text in a new document. */
+    fun discardAndOpenPendingSharedText() {
+        val text = _pendingSharedText.value ?: return
+        _pendingSharedText.value = null
+        newDocumentWithContent(text, policy = ReplacePolicy.DISCARD)
+    }
+
+    /** Save current document, then open the pending shared text in a new document. */
+    fun saveAndOpenPendingSharedText() {
+        val text = _pendingSharedText.value ?: return
+        viewModelScope.launch {
+            withWriteClaim {
+                val doc = slot.document.value
+                if (doc != null && doc.dirty) {
+                    val target = doc.uri ?: return@withWriteClaim
+                    if (refuseNotUtf8(doc)) return@withWriteClaim
+                    _fileLoadState.emit(FileLoadState.Saving)
+                    val result = repository.saveFile(target, contentForDisk(doc))
+                    if (result.isFailure) {
+                        _fileLoadState.emit(
+                            FileLoadState.SaveError(result.exceptionOrNull()?.message ?: "Unknown error"),
+                        )
+                        return@withWriteClaim
+                    }
+                    slot.markSaved(doc.id, doc.content)
+                }
+                _pendingSharedText.value = null
+                newDocumentWithContent(text, policy = ReplacePolicy.DISCARD)
             }
         }
     }
@@ -1251,7 +1306,17 @@ constructor(
      * Nothing is persisted — no last-file URI, no recents entry. Both are keyed by URI, and a
      * document with no file has no business appearing in a list of files you can reopen.
      */
-    fun newDocument() {
+    fun newDocument() = newDocumentWithContent("")
+
+    /**
+     * Create a new document pre-populated with [initialContent].
+     * Always opens directly in the editor.
+     */
+    fun newDocumentWithContent(
+        initialContent: String,
+        displayName: String = NEW_DOCUMENT_NAME,
+        policy: ReplacePolicy = ReplacePolicy.IF_CLEAN,
+    ) {
         viewModelScope.launch {
             // Claimed BEFORE anything can suspend, so a startup restore that is still reading its
             // file claimed earlier and loses the slot, however the two finish (M-109: the restore
@@ -1262,14 +1327,22 @@ constructor(
             // publish, put the screen back in `Loading` and, if its read failed, report that failure
             // over the new document.
             restoreJob.cancel()
+            val (lineEnding, normalized) = withContext(cpuDispatcher) {
+                detectLineEnding(initialContent) to initialContent.replace("\r\n", "\n")
+            }
             // Everything is known without I/O — no file, no override, an empty TOC — so the whole
             // document is published in one step, with no late write-back (the late `Success` this
             // used to emit after a heading pass could overwrite a newer load's `Error`). Retiring
             // a previous open failure's message is part of every publish (M-126).
-            val kind = DocumentKind.fromDisplayName(NEW_DOCUMENT_NAME)
+            val kind = DocumentKind.fromDisplayName(displayName)
             val publication = Publication(
-                document = Document(uri = null, content = "", dirty = false, displayName = NEW_DOCUMENT_NAME),
-                lineEnding = "LF",
+                document = Document(
+                    uri = null,
+                    content = normalized,
+                    dirty = normalized.isNotEmpty(),
+                    displayName = displayName,
+                ),
+                lineEnding = lineEnding,
                 transient = false,
                 // Always the editor, whatever the M-90 setting: a blank reader shows nothing at all.
                 switchToEditor = true,
@@ -1279,9 +1352,7 @@ constructor(
                 previewScroll = ScrollAnchor(),
                 resetEditorScroll = true,
             )
-            // IF_CLEAN: Create MD File is offered only on the welcome screen, with nothing open, so
-            // a refusal is unreachable today; if a dirty document were ever open, it is kept.
-            if (slot.publish(claim, publication, ReplacePolicy.IF_CLEAN) == PublishOutcome.PUBLISHED) {
+            if (slot.publish(claim, publication, policy) == PublishOutcome.PUBLISHED) {
                 loadingClaim = null // a load still running for the restore no longer owns the screen
                 _fileLoadState.value = FileLoadState.Success
             }

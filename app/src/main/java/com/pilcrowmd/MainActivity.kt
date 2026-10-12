@@ -45,7 +45,11 @@ class MainActivity : ComponentActivity() {
     private val _intentFileUri = mutableStateOf<Uri?>(null)
     val intentFileUri: State<Uri?> get() = _intentFileUri
 
-    // True once the current intent's file has been consumed by the app. Saved across recreation,
+    // Shared text received via ACTION_SEND (share sheet).
+    private val _intentSharedText = mutableStateOf<String?>(null)
+    val intentSharedText: State<String?> get() = _intentSharedText
+
+    // True once the current intent's file or shared text has been consumed by the app. Saved across recreation,
     // because getIntent() survives recreation too: without this, every rotation re-published the
     // launch file and loaded it over whatever the user had opened since (M-139). Set only on
     // consumption, not on publish, so a recreation that lands before the first composition still
@@ -67,15 +71,17 @@ class MainActivity : ComponentActivity() {
         splashScreen.setKeepOnScreenCondition {
             SystemClock.uptimeMillis() - splashStart < SPLASH_MIN_DISPLAY_MS
         }
-        // Whether this process was launched to open a specific file (vs a plain launcher start).
-        // Gates the stranded-WAL-slot dialog: auto-pop only on a launcher start, never on a file open.
-        val launchedToOpenFile = isFileOpenIntent(intent)
+        // Whether this process was launched to open a specific file or text (vs a plain launcher start).
+        // Gates the stranded-WAL-slot dialog: auto-pop only on a launcher start, never on a file/text open.
+        val launchedWithContent = isContentIntent(intent)
         setContent {
             PilcrowApp(
                 context = this,
                 intentUri = intentFileUri,
                 onIntentConsumed = ::consumeIntentFileUri,
-                launchedToOpenFile = launchedToOpenFile,
+                intentSharedText = intentSharedText,
+                onSharedTextConsumed = ::consumeIntentSharedText,
+                launchedToOpenFile = launchedWithContent,
             )
         }
 
@@ -84,7 +90,7 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState?.getBoolean(KEY_INTENT_HANDLED) == true) {
             intentHandled = true
         } else {
-            handleIntentFile(intent)
+            handleIntent(intent)
         }
     }
 
@@ -93,10 +99,11 @@ class MainActivity : ComponentActivity() {
         outState.putBoolean(KEY_INTENT_HANDLED, intentHandled)
     }
 
-    /** True if [intent] launched the app to open a specific file (ACTION_VIEW data / ACTION_SEND stream). */
-    private fun isFileOpenIntent(intent: Intent?): Boolean = when (intent?.action) {
+    /** True if [intent] launched the app to open specific content (file or shared text). */
+    private fun isContentIntent(intent: Intent?): Boolean = when (intent?.action) {
         Intent.ACTION_VIEW -> intent.data != null
-        Intent.ACTION_SEND -> intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM) != null
+        Intent.ACTION_SEND -> intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM) != null ||
+            intent.hasExtra(Intent.EXTRA_TEXT) || intent.hasExtra(Intent.EXTRA_HTML_TEXT)
         else -> false
     }
 
@@ -104,44 +111,65 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent) // keep getIntent() current for the running Activity
         // Handle intent when app is already running
-        // (e.g., user taps a .md file while Pilcrow is open).
-        handleIntentFile(intent)
+        // (e.g., user taps a .md file or shares text while Pilcrow is open).
+        handleIntent(intent)
     }
 
     /**
-     * Extract URI from intent (ACTION_VIEW or ACTION_SEND), take persistent permission,
+     * Extract URI or shared text from intent (ACTION_VIEW or ACTION_SEND), take persistent permission,
      * and store for the app to load.
      */
-    private fun handleIntentFile(intent: Intent) {
-        val uri = when (intent.action) {
-            Intent.ACTION_VIEW -> intent.data // File manager "Open with"
-            Intent.ACTION_SEND -> intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM) // Share sheet
-            else -> null
-        }
-
-        if (uri != null) {
-            // Request persistent permission so app can re-open file later.
-            takePermission(uri)
-            // Publish for PilcrowApp to observe and load. A new file is not handled until consumed.
-            intentHandled = false
-            _intentFileUri.value = uri
+    private fun handleIntent(intent: Intent) {
+        when (intent.action) {
+            Intent.ACTION_VIEW -> {
+                val uri = intent.data
+                if (uri != null) {
+                    takePermission(uri)
+                    intentHandled = false
+                    _intentFileUri.value = uri
+                }
+            }
+            Intent.ACTION_SEND -> {
+                val streamUri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                if (streamUri != null) {
+                    takePermission(streamUri)
+                    intentHandled = false
+                    _intentFileUri.value = streamUri
+                } else {
+                    val html = intent.getStringExtra(Intent.EXTRA_HTML_TEXT)
+                    val plain = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+                    val subject = intent.getStringExtra(Intent.EXTRA_SUBJECT)
+                    val shared = com.pilcrowmd.util.SharedTextResolver.resolve(html, plain, subject)
+                    if (!shared.isNullOrBlank()) {
+                        intentHandled = false
+                        _intentSharedText.value = shared
+                    }
+                }
+            }
         }
     }
 
     /**
-     * Take persistent read permission for the given URI so it remains accessible after restart.
-     * Some content providers don't support this; fail gracefully.
+     * Take persistent read/write permission for the given URI so it remains accessible and writable after restart.
+     * Some content providers only grant read or don't support persistable permissions; fall back gracefully.
      */
     private fun takePermission(uri: Uri) {
         try {
             contentResolver.takePersistableUriPermission(
                 uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
             )
-        } catch (e: Exception) {
-            // Some file managers don't support persistent permissions; fail gracefully.
-            // File still loads in this session but won't be re-openable after app restart.
-            Log.w("MainActivity", "Could not take persistent permission for $uri", e)
+        } catch (_: Exception) {
+            try {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            } catch (e: Exception) {
+                // Some file managers don't support persistent permissions; fail gracefully.
+                // File still loads in this session but won't be re-openable after app restart.
+                Log.w("MainActivity", "Could not take persistent permission for $uri", e)
+            }
         }
     }
 
@@ -154,19 +182,27 @@ class MainActivity : ComponentActivity() {
         _intentFileUri.value = null
         intentHandled = true
     }
+
+    /** Mark the intent's shared text as handled. */
+    fun consumeIntentSharedText() {
+        _intentSharedText.value = null
+        intentHandled = true
+    }
 }
 
 /**
  * Root composable for Pilcrow app.
  * Constructs ViewModel with repository and storage implementations.
  * Wires up MainScreen with full state management and SAF integration.
- * Handles intent-opened files via PilcrowApp initialization.
+ * Handles intent-opened files and shared text via PilcrowApp initialization.
  */
 @Composable
 fun PilcrowApp(
     context: android.content.Context,
     intentUri: androidx.compose.runtime.State<android.net.Uri?>,
     onIntentConsumed: () -> Unit,
+    intentSharedText: androidx.compose.runtime.State<String?> = androidx.compose.runtime.mutableStateOf(null),
+    onSharedTextConsumed: () -> Unit = {},
     launchedToOpenFile: Boolean = false,
 ) {
     MaterialTheme {
@@ -204,6 +240,15 @@ fun PilcrowApp(
                 viewModel.takePermission(uri)
                 viewModel.openFromIntent(uri)
                 onIntentConsumed()
+            }
+        }
+
+        // Shared text (cold start + warm share sheet while running).
+        androidx.compose.runtime.LaunchedEffect(intentSharedText.value) {
+            val text = intentSharedText.value
+            if (text != null) {
+                viewModel.openSharedText(text)
+                onSharedTextConsumed()
             }
         }
 

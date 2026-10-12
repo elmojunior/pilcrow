@@ -37,7 +37,11 @@ import java.nio.charset.CodingErrorAction
  * @param walBaseDir a durable, non-evictable directory (e.g. `Context.noBackupFilesDir`). Cache dirs
  *   MUST NOT be used: Android can wipe them under storage pressure, defeating recovery.
  */
-class LocalFileRepository(private val contentResolver: ContentResolver, walBaseDir: File) : FileRepository {
+class LocalFileRepository(
+    private val contentResolver: ContentResolver,
+    walBaseDir: File,
+    private val context: android.content.Context? = null,
+) : FileRepository {
 
     private val journal = PendingSaveJournal(walBaseDir)
 
@@ -178,8 +182,16 @@ class LocalFileRepository(private val contentResolver: ContentResolver, walBaseD
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
             )
             Result.success(Unit)
-        } catch (e: Exception) {
-            Result.failure(e)
+        } catch (_: Exception) {
+            try {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
         }
     }
 
@@ -199,8 +211,22 @@ class LocalFileRepository(private val contentResolver: ContentResolver, walBaseD
     override fun hasPersistedPermission(uri: Uri): Boolean =
         contentResolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission }
 
-    override fun hasPersistedWritePermission(uri: Uri): Boolean =
-        contentResolver.persistedUriPermissions.any { it.uri == uri && it.isWritePermission }
+    override fun hasPersistedWritePermission(uri: Uri): Boolean {
+        if (contentResolver.persistedUriPermissions.any { it.uri == uri && it.isWritePermission }) {
+            return true
+        }
+        val ctx = context ?: return false
+        return try {
+            ctx.checkUriPermission(
+                uri,
+                android.os.Process.myPid(),
+                android.os.Process.myUid(),
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     /**
      * List stranded WAL slots (Safeguard 1 escape hatch). Acquires [journalMutex] — the same lock
