@@ -15,6 +15,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.pilcrowmd.R
 import com.pilcrowmd.rendering.AnchorTargets
 import com.pilcrowmd.rendering.warmedMarkwonRenderer
+import com.pilcrowmd.testing.readerModelFor
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -54,7 +55,10 @@ class MarkdownPreviewAnchorTargetsTest {
         composeRule.setContent {
             val context = LocalContext.current
             val renderer = remember { warmedMarkwonRenderer(context) }
-            MarkdownPreview(content = content.value, renderer = renderer)
+            MarkdownPreview(
+                model = remember(content.value) { renderer.readerModelFor(content.value) },
+                renderer = renderer,
+            )
         }
         drain()
         val list = findList(composeRule.activity.window.decorView)!!

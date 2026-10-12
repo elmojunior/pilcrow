@@ -17,7 +17,7 @@ import com.pilcrowmd.repository.LocalFileRepository
  * deleted target — get silently rescued by the platform, so a real failure can't be forced reliably).
  *
  *   1. open a file in Pilcrow and make an edit (do not save yet);
- *   2. `adb shell am broadcast -n com.pilcrowmd/.debug.DebugFailSaveReceiver`
+ *   2. `adb shell am broadcast -n com.pilcrowmd.debug/com.pilcrowmd.debug.DebugFailSaveReceiver`
  *      → arms the next [LocalFileRepository.saveFile] to abort at the target-open step exactly as a
  *        real I/O failure would (it throws BEFORE the "wt" open truncates the file);
  *   3. tap Save in Pilcrow → "Save failed" surfaces via the normal snackbar, the edit stays in the

@@ -9,6 +9,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import com.pilcrowmd.rendering.MarkwonRenderer
+import com.pilcrowmd.testing.readerModelFor
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -38,7 +39,7 @@ class MarkdownPreviewJumpAckTest {
             val context = LocalContext.current
             val renderer = remember { MarkwonRenderer(context) }
             MarkdownPreview(
-                content = content,
+                model = remember { renderer.readerModelFor(content) },
                 renderer = renderer,
                 jumpPosition = jumpPosition,
                 jumpSeq = jumpSeq,

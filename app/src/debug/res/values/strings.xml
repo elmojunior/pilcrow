@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Debug builds only: the launcher name of the test build, which installs beside the Play app as
+     com.pilcrowmd.debug (applicationIdSuffix in app/build.gradle.kts, NEW-110). -->
+<resources>
+    <string name="app_name">PilcrowMD debug</string>
+</resources>

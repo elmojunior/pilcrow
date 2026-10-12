@@ -7,6 +7,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.14] - 2026-10-12
+
+### Changed
+
+- **One Read/Edit button** replaces the two-part switch. It shows what it does: **Edit** in the
+  reader, **Read** in the editor. Save shows in the editor, and Contents has a new icon.
+- **Links, footnotes and Contents scroll to their target** instead of jumping, so you can see
+  where you went.
+- **The reader leaves two lines of space after the end**, not a fifth of a screen.
+
+### Fixed
+
+- **Very large files open without freezing or crashing the reader.** The reader now gets a
+  document ready in the background, once, and keeps it through pinch zoom, font, theme changes
+  and a trip to the editor. A Markdown file over 10 million characters opens as plain text, with
+  a notice, instead of running out of memory.
+- **A paragraph with thousands of formulas or formatted words no longer freezes the app when it
+  opens.** Such a paragraph is shown in several pieces, with a short line at each cut; text
+  selection covers one piece at a time, and search does not find a phrase that runs across a cut.
+  PDF export prints it whole.
+- **Edit to Read with the keyboard open keeps the line you just typed in view**, above the
+  keyboard.
+
 ## [1.0.13] - 2026-10-09
 
 ### Added

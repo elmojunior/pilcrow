@@ -32,6 +32,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.recyclerview.widget.RecyclerView
 import com.pilcrowmd.rendering.MarkwonRenderer
+import com.pilcrowmd.testing.readerModelFor
 import com.pilcrowmd.ui.theme.DarkColorScheme
 import com.pilcrowmd.ui.theme.LocalMDColors
 import org.junit.Assert.assertEquals
@@ -169,7 +170,7 @@ class JumpControlsTalkBackTest {
             CompositionLocalProvider(LocalMDColors provides DarkColorScheme) {
                 Column {
                     if (withTextAbove) Text(ABOVE)
-                    MarkdownPreview(content = longDocument, renderer = renderer)
+                    MarkdownPreview(model = remember { renderer.readerModelFor(longDocument) }, renderer = renderer)
                 }
             }
         }

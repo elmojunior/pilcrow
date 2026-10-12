@@ -8,9 +8,12 @@ import com.pilcrowmd.domain.markdown.AdapterBlocks
 import com.pilcrowmd.domain.markdown.ReaderDocument
 import com.pilcrowmd.rendering.buildPilcrowMarkwon
 import com.pilcrowmd.screenshot.MarkdownSampleProvider
+import com.pilcrowmd.testing.bigParagraph
+import com.pilcrowmd.testing.hardInlineParagraph
 import io.noties.markwon.MarkwonReducer
 import org.commonmark.node.Node
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -39,6 +42,12 @@ import org.robolectric.RobolectricTestRunner
  * this test compares [AdapterBlocks.of] on the parity tree with the list the adapter's own reducer
  * (`MarkwonReducer.directChildren()`) builds from the render tree — the numbering every adapter
  * position is taken from.
+ *
+ * **A split paragraph is parity too (M-328).** Both trees take [ReaderDocument.transform]'s paragraph
+ * split, so a huge paragraph must come out in the same pieces from both. The one known gap: inline
+ * child counts differ for formula paragraphs (the parity parser has no inline-math processor), so a
+ * paragraph over the split limit that is mostly formulas can split differently in the two trees.
+ * That is recorded under M-321 and is not pinned here.
  */
 @RunWith(RobolectricTestRunner::class)
 class ParseParityTest {
@@ -90,6 +99,56 @@ class ParseParityTest {
         assertParity("display math inline", "before\n\n\$\$x\$\$\n\nafter")
         assertParity("inline math", "a \$x^2\$ b")
         assertParity("table then para", "| a | b |\n|---|---|\n| 1 | 2 |\n\nafter")
+    }
+
+    @Test
+    fun aHugeSpanParagraphSplitsIntoTheSamePiecesInBothParsers() {
+        val md = "# Head\n\n" + bigParagraph(450) + "\n\n## Tail\n"
+
+        val render = topLevelTypes(ReaderDocument.transform(markwon.parse(md)))
+        val search = topLevelTypes(parity.parseDocument(md)!!)
+
+        assertEquals("same pieces from both parsers (render=$render, parity=$search)", render, search)
+        assertTrue("the paragraph was split: ${render.size} top-level blocks", render.size > 3)
+        assertEquals(listOf("Heading") + List(render.size - 2) { "Paragraph" } + "Heading", render)
+    }
+
+    private fun paragraphChildClasses(document: Node): List<String> = buildList {
+        var block = document.firstChild
+        while (block != null) {
+            if (block is org.commonmark.node.Paragraph) {
+                var child = block.firstChild
+                while (child != null) {
+                    add(child.javaClass.simpleName)
+                    child = child.next
+                }
+            }
+            block = block.next
+        }
+    }
+
+    @Test
+    fun aHugeParagraphOfHardInlineContentSplitsIntoTheSamePiecesInBothParsers() {
+        val md = "# Head\n\n" + hardInlineParagraph(400) + "\n\n## Tail\n"
+
+        val renderTree = ReaderDocument.transform(markwon.parse(md))
+        val parityTree = parity.parseDocument(md)!!
+        val render = topLevelTypes(renderTree)
+        val search = topLevelTypes(parityTree)
+        val renderChildren = paragraphChildClasses(renderTree)
+        val parityChildren = paragraphChildClasses(parityTree)
+        val firstDifference = (0 until maxOf(renderChildren.size, parityChildren.size))
+            .firstOrNull { renderChildren.getOrNull(it) != parityChildren.getOrNull(it) }
+
+        assertEquals(
+            "piece counts: render=${render.size}, parity=${search.size}; first differing child index " +
+                "$firstDifference (render=${firstDifference?.let { renderChildren.getOrNull(it) }}, " +
+                "parity=${firstDifference?.let { parityChildren.getOrNull(it) }}); " +
+                "inline children render=${renderChildren.size}, parity=${parityChildren.size}",
+            render,
+            search,
+        )
+        assertTrue("the paragraph was split: ${render.size} top-level blocks", render.size > 3)
     }
 
     private fun assertAdapterParity(name: String, markdown: String) {

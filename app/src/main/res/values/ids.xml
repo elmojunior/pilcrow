@@ -34,4 +34,9 @@
       every frame of that gesture holds the same point under the fingers as they move.
     -->
     <item name="pinch_focal_anchor" type="id" />
+    <!--
+      The reader's jump-animation state (a footnote, #anchor or Contents jump in flight), on its
+      RecyclerView, so a second jump can cancel the first without a global.
+    -->
+    <item name="reader_jump" type="id" />
 </resources>

@@ -37,7 +37,7 @@ import org.commonmark.node.FencedCodeBlock
  */
 internal fun parseTopLevelBlocks(markwon: Markwon, content: String): List<org.commonmark.node.Node> {
     // The reader's own tree (shared passes, and the NEW-11 depth fallback), so the PDF cannot diverge
-    // from the screen.
+    // from the screen, except that a long paragraph is printed whole where the screen splits it (M-328).
     val document = com.pilcrowmd.rendering.ReaderTree.build(markwon, content, plain = false)
     val nodes = buildList {
         var node = document.firstChild

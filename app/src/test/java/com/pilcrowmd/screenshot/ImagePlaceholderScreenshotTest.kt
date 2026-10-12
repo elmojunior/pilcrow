@@ -22,6 +22,7 @@ import com.github.takahirom.roborazzi.captureRoboImage
 import com.pilcrowmd.domain.model.ThemeMode
 import com.pilcrowmd.rendering.ImagePlaceholderDrawable
 import com.pilcrowmd.rendering.warmedMarkwonRenderer
+import com.pilcrowmd.testing.readerModelFor
 import com.pilcrowmd.ui.components.MarkdownPreview
 import com.pilcrowmd.ui.theme.DarkColorScheme
 import com.pilcrowmd.ui.theme.LightColorScheme
@@ -68,7 +69,7 @@ class ImagePlaceholderScreenshotTest(private val themeMode: ThemeMode) {
             val renderer = remember { warmedMarkwonRenderer(context) }
             CompositionLocalProvider(LocalMDColors provides scheme) {
                 Box(Modifier.fillMaxSize().background(scheme.primaryBackground)) {
-                    MarkdownPreview(content = READER_MARKDOWN, renderer = renderer)
+                    MarkdownPreview(model = remember { renderer.readerModelFor(READER_MARKDOWN) }, renderer = renderer)
                 }
             }
         }

@@ -23,7 +23,7 @@ import kotlinx.coroutines.withTimeout
  * then delete it" dance — a SAF "wt" open RE-CREATES a deleted target, so deletion alone does not
  * strand a slot. Instead this stages a slot whose target URI can never be committed:
  *
- *   1. `adb shell am broadcast -n com.pilcrowmd/.debug.DebugStrandReceiver`
+ *   1. `adb shell am broadcast -n com.pilcrowmd.debug/com.pilcrowmd.debug.DebugStrandReceiver`
  *      → stages content + the commit marker to the WAL against a deliberately un-writable URI
  *        (an ExternalStorageProvider path under a folder the app holds no grant for, so the
  *        "wt" open throws — exactly the uncommittable state launch recovery cannot resolve);

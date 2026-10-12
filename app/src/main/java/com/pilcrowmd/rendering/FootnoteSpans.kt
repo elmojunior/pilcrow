@@ -14,7 +14,6 @@ import android.view.View
 import android.view.ViewParent
 import android.widget.TextView
 import androidx.annotation.ColorInt
-import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.pilcrowmd.R
 
@@ -67,7 +66,7 @@ class FootnoteJumpSpan(private val targetBlockIndex: Int) : ClickableSpan() {
 
 /**
  * Scroll the list this view belongs to so [targetBlockIndex] sits at the top of the viewport — the
- * same call the TOC jump makes. Shared by the marker's span and the definition's back-link button,
+ * same [smoothJumpTo] the TOC jump makes. Shared by the marker's span and the definition's back-link button,
  * so both directions of the jump are one behaviour.
  *
  * Silently does nothing when there is no target and when there is no list (the PDF export renders
@@ -80,12 +79,7 @@ fun View.jumpToBlock(targetBlockIndex: Int) {
     (recyclerView.getTag(R.id.details_state) as? DetailsState)?.reveal(targetBlockIndex)?.let {
         recyclerView.adapter?.notifyItemRangeChanged(it.first, it.count())
     }
-    val layoutManager = recyclerView.layoutManager as? LinearLayoutManager
-    if (layoutManager != null) {
-        layoutManager.scrollToPositionWithOffset(targetBlockIndex, 0)
-    } else {
-        recyclerView.smoothScrollToPosition(targetBlockIndex)
-    }
+    smoothJumpTo(recyclerView, targetBlockIndex)
     // Landing on the block is not the same as finding it: a footnote definition looks like every
     // other paragraph, so the eye still has to hunt. Tint it briefly (M-06).
     highlightOnArrival(recyclerView, targetBlockIndex)

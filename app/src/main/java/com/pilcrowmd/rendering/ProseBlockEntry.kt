@@ -4,6 +4,8 @@
 package com.pilcrowmd.rendering
 
 import android.content.Context
+import android.text.Spannable
+import android.text.SpannableStringBuilder
 import android.util.Log
 import android.util.TypedValue
 import android.view.LayoutInflater
@@ -36,6 +38,7 @@ import org.commonmark.node.Paragraph
  * Markwon's heading/emphasis spans scale relative to this base size, so headings stay
  * proportional. Color comes only from the token layer (Safeguard 4).
  */
+@Suppress("LongParameterList") // The reader's settings, forwarded from the adapter builder.
 class ProseBlockEntry(
     private val context: Context,
     private val fontScale: Float = 1.0f,
@@ -44,6 +47,8 @@ class ProseBlockEntry(
     private val colorScheme: PilcrowColorScheme = DarkColorScheme,
     /** M-161: which `<details>` sections are open. Null (the PDF) draws every header open, untappable. */
     private val details: DetailsState? = null,
+    /** M-328: where a split paragraph's pieces meet. Null (the PDF keeps the paragraph whole) means no seams. */
+    private val seams: ParagraphSeamState? = null,
 ) : MarkwonAdapter.Entry<Node, ProseBlockEntry.Holder>() {
 
     private val headerStyle by lazy {
@@ -62,6 +67,7 @@ class ProseBlockEntry(
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, scaledBodySize)
         tv.setLineSpacing(0f, PreviewLineHeightMultiplier)
         tv.typeface = ResourcesCompat.getFont(context, fontSet.readingRegular)
+        tv.setSpannableFactory(KeepSpannableFactory) // M-322, see the object's KDoc
         return Holder(tv)
     }
 
@@ -77,20 +83,7 @@ class ProseBlockEntry(
         // so `node.parent` is null here — a `parent is Document` guard would wrongly disable this).
         // Paragraphs nested in lists/blockquotes render inside their parent block's single TextView,
         // never via bindHolder, so a plain `node is Paragraph` already scopes to body paragraphs.
-        val (topPaddingDp, bottomPaddingDp) = when (node) {
-            is Paragraph -> PARAGRAPH_VERTICAL_PADDING_DP to PARAGRAPH_VERTICAL_PADDING_DP
-            is Heading -> HEADING_TOP_PADDING_DP to HEADING_BOTTOM_PADDING_DP
-            else -> PROSE_VERTICAL_PADDING_DP to PROSE_VERTICAL_PADDING_DP
-        }
-        val density = context.resources.displayMetrics.density
-        val top = (topPaddingDp * density).toInt()
-        val bottom = (bottomPaddingDp * density).toInt()
-        // M-161: a callout draws its box and a `<details>` header takes a tap; a recycled holder must
-        // shed both, so every bind starts from the plain block and adds only what this node needs.
-        val callout = node as? CalloutBlock
-        val detailsHeader = (node as? HtmlBlock)?.let { Details.parseHeader(it.literal) }
-        applyChrome(holder, callout, detailsHeader, top, bottom)
-        // Re-apply the size on EVERY bind, for the same reason the padding and colour above are
+        // Re-apply the size on EVERY bind, for the same reason the padding and colour are
         // re-applied: a recycled holder must not carry state from its previous life. The live
         // pinch-zoom writes a PX size straight onto the attached TextView, and the end-of-gesture
         // rebuild uses `swapAdapter(_, false)`, which RE-BINDS existing holders instead of
@@ -98,11 +91,26 @@ class ProseBlockEntry(
         // survive at rest, permanently. That is M-04's visible symptom: after releasing a pinch the
         // title stays huge while the paragraph under it stays tiny. Identical value to the one
         // `createHolder` sets, so a freshly created holder is unaffected and resting layout is
-        // byte-identical (measured: zero goldens move).
+        // byte-identical (measured: zero goldens move). Before the padding, because a split
+        // paragraph's seam padding is measured from the final font metrics.
         holder.textView.setTextSize(
             TypedValue.COMPLEX_UNIT_SP,
             PilcrowTypography.PROSE_BODY_FONT_SIZE_SP * fontScale,
         )
+        // M-328: a piece of a split paragraph drops font padding at its top seam; every other bind
+        // restores it, since a recycled holder may have shown a piece.
+        holder.textView.includeFontPadding = !(node is Paragraph && continuesPrevious(node))
+        val density = context.resources.displayMetrics.density
+        val (top, bottom) = when (node) {
+            is Paragraph -> paragraphPadding(holder.textView, node, (PARAGRAPH_VERTICAL_PADDING_DP * density).toInt())
+            is Heading -> (HEADING_TOP_PADDING_DP * density).toInt() to (HEADING_BOTTOM_PADDING_DP * density).toInt()
+            else -> (PROSE_VERTICAL_PADDING_DP * density).toInt() to (PROSE_VERTICAL_PADDING_DP * density).toInt()
+        }
+        // M-161: a callout draws its box and a `<details>` header takes a tap; a recycled holder must
+        // shed both, so every bind starts from the plain block and adds only what this node needs.
+        val callout = node as? CalloutBlock
+        val detailsHeader = (node as? HtmlBlock)?.let { Details.parseHeader(it.literal) }
+        applyChrome(holder, callout, detailsHeader, top, bottom)
         try {
             // Reset shared-holder state: a recycled holder may carry the fallback's secondaryText
             // color from a previous failed bind — restore primaryText on every healthy bind.
@@ -136,6 +144,22 @@ class ProseBlockEntry(
         }
         // M-157: last, after the text and the tap target are in place. A header takes a tap instead.
         if (detailsHeader == null) holder.textView.enableBlockSelection()
+    }
+
+    private fun continuesPrevious(node: Paragraph) = seams?.seams?.continuesPrevious(node) == true
+
+    /**
+     * M-328 (docs/proposals/m328-reader-big-content.md): a paragraph's top and bottom padding in px.
+     * An ordinary paragraph gets [gap] on both sides, as it always has. A piece of a split paragraph
+     * drops the gap at its seam, with the same arithmetic as a plain-text chunk (see
+     * [PlainTextBlockEntry] and [seamBottomPadding], the M-365 seam), so the cut reads as a line break.
+     */
+    private fun paragraphPadding(tv: TextView, node: Paragraph, gap: Int): Pair<Int, Int> {
+        val continuesPrevious = continuesPrevious(node)
+        val continuesNext = seams?.seams?.continuesNext(node) == true
+        val seamBottom =
+            seamBottomPadding(tv.paint.fontMetricsInt, tv.lineSpacingMultiplier, continuesPrevious, continuesNext)
+        return (if (continuesPrevious) 0 else gap) to seamBottom + (if (continuesNext) 0 else gap)
     }
 
     /** M-161: the plain block's padding, or a callout's box, or a `<details>` header's inset. */
@@ -212,4 +236,19 @@ class ProseBlockEntry(
         // failure-path test asserts the exact degradation contract.
         internal const val RENDER_FALLBACK_TEXT = "[content could not be rendered]"
     }
+}
+
+/**
+ * M-322. `TextView.setText(_, SPANNABLE)` (Markwon's default buffer type) copies the text through the
+ * view's `Spannable.Factory`, and the default one makes a flat `SpannableString`, whose `getSpans` and
+ * `nextSpanTransition` test EVERY span with `Class.isInstance`. StaticLayout calls them per span run
+ * and Layout.draw per line, so one paragraph's cost grows with spans x lines: measured on the
+ * emulator, a paragraph with 4,000 inline spans paid ~0.9 s of layout and one with 2,000 inline
+ * formulas ~0.2 s of UI draw per frame, the shape of the second Vitals ANR. A `SpannableStringBuilder`
+ * keeps its spans in an interval tree, so the same lookups cost O(log n + k). It is a COPY, not
+ * Markwon's own builder: that one reverses `getSpans`, and spans added after `setText` (the search
+ * highlight) must keep landing last, exactly as they do in the flat copy.
+ */
+private object KeepSpannableFactory : Spannable.Factory() {
+    override fun newSpannable(source: CharSequence): Spannable = SpannableStringBuilder(source)
 }

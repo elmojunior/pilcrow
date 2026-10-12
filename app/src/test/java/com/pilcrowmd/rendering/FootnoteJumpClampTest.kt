@@ -3,12 +3,16 @@
 
 package com.pilcrowmd.rendering
 
+import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.TextView
+import androidx.core.content.res.ResourcesCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.test.core.app.ApplicationProvider
+import com.pilcrowmd.ui.theme.FontSets
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -27,12 +31,13 @@ import org.robolectric.RobolectricTestRunner
  * These tests pin the geometry directly rather than the rendered document, because the clamp is a
  * property of the list, not of Markdown.
  *
- * The headroom below the last block is now capped at one fifth of the viewport (M-98): scrolling to
- * the very end shows some space after the document, never a near-blank screen. The accepted price
- * is that a jump to a block near the end stops where the document ends instead of topping it.
- * `blockHeight` (100 px) is deliberately much smaller than both a viewport (900 px) and
- * a fifth of one (180 px), so the cap is the only thing that decides the tail gap: with a
- * full-viewport spacer the gap is 800 px or more, with the cap it is exactly 180 px.
+ * The headroom below the last block is two body lines (it was a fifth of the viewport, M-98):
+ * scrolling to the very end shows a little space after the document, never a near-blank screen.
+ * The accepted price is that a jump to a block near the end stops where the document ends instead
+ * of topping it. `bodyLinePx` (40 px) is deliberately different from a fifth of the viewport
+ * (180 px) and much smaller than a viewport (900 px), so the line count is the only thing that
+ * decides the tail gap: with a full-viewport spacer the gap is 800 px or more, with a fifth it is
+ * 180 px, with two lines it is exactly 80 px.
  */
 @RunWith(RobolectricTestRunner::class)
 class FootnoteJumpClampTest {
@@ -40,6 +45,7 @@ class FootnoteJumpClampTest {
     private val viewportHeight = 900
     private val blockHeight = 100
     private val blockCount = 30
+    private val bodyLinePx = 40
 
     /** A list of fixed-height blocks, laid out in a fixed viewport — the reader's shape, minimal. */
     private fun listOfBlocks(
@@ -65,7 +71,7 @@ class FootnoteJumpClampTest {
                 (holder.itemView as TextView).text = "block $position"
             }
         }
-        if (applyBottomSpacer) applyReaderBottomSpacer(recyclerView)
+        if (applyBottomSpacer) applyReaderBottomSpacer(recyclerView, bodyLinePx)
         layOut(recyclerView)
         return recyclerView
     }
@@ -108,18 +114,33 @@ class FootnoteJumpClampTest {
     }
 
     @Test
-    fun `scrolled fully down, the gap below the last block is some but at most a fifth of the viewport`() {
+    fun `scrolled fully down, the gap below the last block is exactly two body lines`() {
         val recyclerView = listOfBlocks(applyBottomSpacer = true)
         // Far more than the document is tall: the list stops at its own end, spacer included.
         recyclerView.scrollBy(0, blockCount * blockHeight + viewportHeight * 2)
         layOut(recyclerView)
         val gap = viewportHeight - lastBlock(recyclerView).bottom
-        assertTrue(
-            "The blank space after the document must be at most a fifth of the screen, never a " +
-                "near-blank screen; it was $gap px in a $viewportHeight px viewport.",
-            gap <= viewportHeight / 5,
+        assertNotEquals(
+            "Guard: the old answer (a fifth of the viewport) must differ from the new one, or this " +
+                "test cannot tell them apart.",
+            viewportHeight / 5,
+            2 * bodyLinePx,
         )
-        assertTrue("but there must be SOME space after the last block; it was $gap px.", gap > 0)
+        assertEquals(
+            "The blank space after the document is two body lines, whatever the viewport is.",
+            2 * bodyLinePx,
+            gap,
+        )
+    }
+
+    @Test
+    fun `a taller body line makes a taller tail, and setting it moves the end of the document`() {
+        val recyclerView = listOfBlocks(applyBottomSpacer = true)
+        setReaderBodyLineHeight(recyclerView, 70)
+        layOut(recyclerView)
+        recyclerView.scrollBy(0, blockCount * blockHeight + viewportHeight * 2)
+        layOut(recyclerView)
+        assertEquals(2 * 70, viewportHeight - lastBlock(recyclerView).bottom)
     }
 
     @Test
@@ -129,10 +150,35 @@ class FootnoteJumpClampTest {
         val gap = viewportHeight - lastBlock(recyclerView).bottom
         assertEquals(
             "Asking for the last block at the top must stop where the document ends: its bottom " +
-                "sits exactly a fifth of the screen above the viewport's bottom (the spacer, no more).",
-            viewportHeight / 5,
+                "sits exactly two body lines above the viewport's bottom (the spacer, no more).",
+            2 * bodyLinePx,
             gap,
         )
+    }
+
+    /**
+     * The tail is defined as two lines of the reader's body text, so the number must be the one a
+     * prose TextView arrives at. Built with the real [ProseBlockEntry.createHolder] (size, typeface,
+     * line spacing), not a copy of what it does, so a change there moves this test.
+     */
+    @Test
+    fun `the measured body line height equals a prose TextView's line height`() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        for (fontSet in FontSets.ALL) {
+            for (fontScale in listOf(1.0f, 1.5f)) {
+                val entry = ProseBlockEntry(context, fontScale = fontScale, fontSet = fontSet)
+                val textView = entry.createHolder(LayoutInflater.from(context), FrameLayout(context)).textView
+                assertEquals(
+                    "font set ${fontSet.id} at scale $fontScale",
+                    textView.lineHeight,
+                    readerBodyLineHeightPx(
+                        context,
+                        fontScale,
+                        ResourcesCompat.getFont(context, fontSet.readingRegular),
+                    ),
+                )
+            }
+        }
     }
 
     /**

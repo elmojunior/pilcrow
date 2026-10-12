@@ -14,6 +14,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.pilcrowmd.domain.usecase.ParseMarkdownHeadingsUseCase
 import com.pilcrowmd.domain.usecase.SearchMarkdownUseCase
 import com.pilcrowmd.rendering.warmedMarkwonRenderer
+import com.pilcrowmd.testing.readerModelFor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -48,7 +49,7 @@ class MarkdownPreviewDetailsTest {
             val context = LocalContext.current
             val renderer = remember { warmedMarkwonRenderer(context) }
             MarkdownPreview(
-                content = content,
+                model = remember { renderer.readerModelFor(content) },
                 renderer = renderer,
                 searchMatches = matches,
                 jumpPosition = jumpPosition,

@@ -51,30 +51,36 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.traversalIndex
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.res.ResourcesCompat
+import androidx.core.view.doOnNextLayout
 import androidx.core.view.doOnPreDraw
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.pilcrowmd.R
-import com.pilcrowmd.domain.markdown.Details
-import com.pilcrowmd.domain.markdown.HeadingAnchors
-import com.pilcrowmd.domain.model.RenderMode
+import com.pilcrowmd.domain.markdown.ParagraphSeams
+import com.pilcrowmd.domain.markdown.ReaderModel
 import com.pilcrowmd.domain.model.SearchMatch
 import com.pilcrowmd.rendering.AnchorTargets
 import com.pilcrowmd.rendering.CodeHighlighting
 import com.pilcrowmd.rendering.DetailsDecoration
 import com.pilcrowmd.rendering.DetailsState
 import com.pilcrowmd.rendering.MarkwonRenderer
+import com.pilcrowmd.rendering.ParagraphSeamState
 import com.pilcrowmd.rendering.ReaderLayoutManager
-import com.pilcrowmd.rendering.ReaderTree
 import com.pilcrowmd.rendering.RecyclerAdapterEntries
 import com.pilcrowmd.rendering.SearchHighlight
 import com.pilcrowmd.rendering.SecondFingerEndsSelection
 import com.pilcrowmd.rendering.applyReaderJumpBehaviour
+import com.pilcrowmd.rendering.cancelReaderJump
 import com.pilcrowmd.rendering.clearReaderHighlight
 import com.pilcrowmd.rendering.documentOverflowsViewport
 import com.pilcrowmd.rendering.endBlockSelection
+import com.pilcrowmd.rendering.readerBodyLineHeightPx
+import com.pilcrowmd.rendering.revealBlockInViewport
 import com.pilcrowmd.rendering.scrollToDocumentEnd
 import com.pilcrowmd.rendering.setImageTapHandler
+import com.pilcrowmd.rendering.setReaderBodyLineHeight
+import com.pilcrowmd.rendering.smoothJumpTo
 import com.pilcrowmd.storage.ScrollAnchor
 import com.pilcrowmd.ui.theme.FontSet
 import com.pilcrowmd.ui.theme.FontSets
@@ -109,7 +115,9 @@ import kotlin.math.roundToInt
 @Composable
 fun MarkdownPreview(
     modifier: Modifier = Modifier,
-    content: String,
+    // What to paint, prepared off the main thread by the ViewModel (M-172): this composable never
+    // parses. Null = not ready yet (the reader shows its background, then a progress indicator).
+    model: ReaderModel?,
     renderer: MarkwonRenderer,
     fontScale: Float = 1.0f,
     fontSet: FontSet = FontSets.DEFAULT,
@@ -124,9 +132,13 @@ fun MarkdownPreview(
     jumpSeq: Int = 0,
     // M-184: called with [jumpSeq] once that jump has been performed, so the caller can drop it.
     onJumpHandled: (Int) -> Unit = {},
-    // PLAIN renders the content verbatim via PlainTextBlocks (no Markdown parsing);
-    // MARKDOWN is today's path, byte-for-byte unchanged.
-    renderMode: RenderMode = RenderMode.MARKDOWN,
+    // Edit to Read with the keyboard open: the block the caret sat in, to bring above the keyboard
+    // once per [caretRevealSeq]. Acknowledged through [onCaretRevealHandled] whether or not the
+    // keyboard turned out to be open ([imeVisible]), so a reader composed later never replays it.
+    caretRevealBlock: Int = -1,
+    caretRevealSeq: Int = 0,
+    onCaretRevealHandled: (Int) -> Unit = {},
+    imeVisible: Boolean = false,
     // M-93: the note on screen, which `images/x.png` is read against; null leaves relative images
     // as placeholders. [imageAccessKey] changes when the granted folders do, which re-renders the
     // pictures; [onImageTap] is a tap on a relative-image placeholder ("Tap to show").
@@ -136,10 +148,13 @@ fun MarkdownPreview(
 ) {
     val currentOnImageTap = rememberUpdatedState(onImageTap)
     val currentOnJumpHandled = rememberUpdatedState(onJumpHandled)
+    val currentOnCaretRevealHandled = rememberUpdatedState(onCaretRevealHandled)
+    val currentImeVisible = rememberUpdatedState(imeVisible)
     // Captured once per composition-entry, so re-entering Reader mode (or rotating) restores the
     // saved offset without fighting live scroll updates.
     val initialScroll = remember { scrollPosition }
-    val lastContent = remember { mutableStateOf<String?>(null) }
+    // The model the adapter currently shows, by identity (a model is never compared by value).
+    val lastModel = remember { mutableStateOf<ReaderModel?>(null) }
 
     // Shared with ProseBlockEntry; colors come from the token layer (Safeguard 4).
     val c = mdColors()
@@ -151,10 +166,14 @@ fun MarkdownPreview(
     }
     // M-161: which <details> sections are open. One per screen; the adapters built here read it.
     val detailsState = remember { DetailsState() }
+    val seamState = remember { ParagraphSeamState() }
     // M-159: which heading anchor is which block; the link resolver reads it off the RecyclerView's tag.
     val anchorTargets = remember { AnchorTargets() }
     val lastSearchKey = remember { mutableStateOf<String?>(null) }
     val lastJumpSeq = remember { mutableStateOf(0) }
+    val lastCaretRevealSeq = remember { mutableStateOf(0) }
+    // Set once the user's finger has dragged this list; the caret reveal then leaves it alone.
+    val userDragged = remember { mutableStateOf(false) }
     // Tracks the font/scale/mermaid config the current adapter was built with, so the adapter
     // is rebuilt if a preference loads/changes after the file opened (cold-start race: prefs
     // arrive from DataStore slightly after the auto-reopened file renders).
@@ -196,10 +215,18 @@ fun MarkdownPreview(
                     // No item add/remove/change animations: a live pinch-zoom swaps the adapter many
                     // times a second, and the default cross-fade would read as a flicker/blink.
                     itemAnimator = null
-                    // M-06: one viewport of headroom below the last block, so a footnote
-                    // definition — always the document's final block — can actually reach the top
-                    // of the viewport instead of being clamped to the bottom.
-                    applyReaderJumpBehaviour(this, c.searchHighlightFocused.toArgb())
+                    // M-06: two body lines of headroom below the last block, so a footnote
+                    // definition — always the document's final block — can come to rest fully in view
+                    // instead of being clamped against the edge of the screen.
+                    applyReaderJumpBehaviour(
+                        this,
+                        c.searchHighlightFocused.toArgb(),
+                        readerBodyLineHeightPx(
+                            context,
+                            fontScale,
+                            ResourcesCompat.getFont(context, fontSet.readingRegular),
+                        ),
+                    )
                     setTag(R.id.details_state, detailsState)
                     setTag(R.id.anchor_targets, anchorTargets)
                     setImageTapHandler { currentOnImageTap.value() }
@@ -215,6 +242,7 @@ fun MarkdownPreview(
                         wrapCodeLines,
                         detailsState,
                         codeHighlighting,
+                        seams = seamState,
                     )
                     addOnScrollListener(object : RecyclerView.OnScrollListener() {
                         override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
@@ -224,6 +252,7 @@ fun MarkdownPreview(
 
                         override fun onScrollStateChanged(rv: RecyclerView, newState: Int) {
                             scrolling.value = newState != RecyclerView.SCROLL_STATE_IDLE
+                            if (newState == RecyclerView.SCROLL_STATE_DRAGGING) userDragged.value = true
                         }
                     })
 
@@ -317,19 +346,19 @@ fun MarkdownPreview(
                 // (0) Rebuild the adapter if the font set, scale, mermaid or wrap toggle, or theme changed since it
                 // was built (e.g. after file open, user toggled theme, or a pinch moved the live scale).
                 // Font size is baked into each holder at createHolder, so a scale change needs new holders
-                // — i.e. a fresh adapter. To do that WITHOUT a flicker during a live pinch: parse the
-                // content into the new adapter BEFORE attaching it, swap it in already-populated
-                // (swapAdapter keeps the recycled-view pool), then restore the anchor synchronously so the
-                // first layout of the new adapter lands in place — no blank frame, no reposition flash.
-                // renderMode is part of the key: the .txt plain⇄markdown toggle re-renders
-                // through the flicker-free rebuild path like a font-scale change.
+                // — i.e. a fresh adapter. To do that WITHOUT a flicker during a live pinch: hand the
+                // SAME prepared blocks to the new adapter BEFORE attaching it (no parse, M-172), swap it in
+                // already-populated (swapAdapter keeps the recycled-view pool), then restore the anchor
+                // synchronously so the first layout of the new adapter lands in place — no blank frame,
+                // no reposition flash. A render-mode toggle arrives as a new model instead (path 1).
                 val configKey = "${liveFontScale.value}|${fontSet.id}|$mermaidCloudEnabled|$wrapCodeLines|" +
-                    "${c.primaryBackground}|$renderMode|$imageAccessKey"
+                    "${c.primaryBackground}|$imageAccessKey"
                 if (configKey != lastConfig.value) {
                     // Keep the user's place across the rebuild: the live anchor mid-reading (e.g. the
                     // commit at the end of a pinch lands where the live reflow left the viewport), or the
                     // entry-time initialScroll on the very first build (no prior place yet).
                     val firstBuild = lastConfig.value == null
+                    cancelReaderJump(rv) // a jump's glide would carry the list off the place restored below
                     val restore = if (firstBuild) initialScroll else rv.currentScrollAnchor()
                     lastConfig.value = configKey
                     // A tint is an index into the document being replaced; carried across a swap it
@@ -348,17 +377,22 @@ fun MarkdownPreview(
                         wrapCodeLines,
                         detailsState,
                         codeHighlighting,
+                        seams = seamState,
                     )
                     // Populate before attaching → no empty frame.
-                    newAdapter.setContentForMode(
-                        renderer.markwonFor(c, liveFontScale.value),
-                        content,
-                        renderMode,
-                        detailsState,
-                        anchorTargets,
-                    )
+                    val markwon = renderer.markwonFor(c, liveFontScale.value)
+                    newAdapter.show(markwon, model, detailsState, anchorTargets, seamState)
                     rv.detailsDecoration()?.scheme = c
-                    lastContent.value = content // content is now rendered; the (1) re-render is skipped this pass
+                    // The tail is two body lines, so it follows the scale and the font the blocks were built at.
+                    setReaderBodyLineHeight(
+                        rv,
+                        readerBodyLineHeightPx(
+                            rv.context,
+                            liveFontScale.value,
+                            ResourcesCompat.getFont(rv.context, fontSet.readingRegular),
+                        ),
+                    )
+                    lastModel.value = model // the model is now shown; the (1) re-render is skipped this pass
                     rv.swapAdapter(newAdapter, false)
                     (rv.layoutManager as? LinearLayoutManager)
                         ?.scrollToPositionWithOffset(restore.index, restore.offset)
@@ -368,21 +402,23 @@ fun MarkdownPreview(
 
                 val adapter = rv.adapter as MarkwonAdapter
 
-                // (1) Re-render when the document text changes WITHOUT a config change (e.g. returning
-                // from the editor) — the config-change path above already rendered new content. Restore
-                // the entry-time anchor after layout settles; scrollToPositionWithOffset survives
-                // block-height changes that an absolute pixel offset could not.
-                if (content != lastContent.value) {
-                    lastContent.value = content
-                    adapter.setContentForMode(
-                        renderer.markwonFor(c, liveFontScale.value),
-                        content,
-                        renderMode,
-                        detailsState,
-                        anchorTargets,
-                    )
+                // (1) Re-render when a new model arrives WITHOUT a config change (the prepared document
+                // landing after the first build, a new file, a render-mode toggle) — the config-change
+                // path above already showed it otherwise. Restore the entry-time anchor after layout
+                // settles; scrollToPositionWithOffset survives block-height changes that an absolute
+                // pixel offset could not.
+                if (model !== lastModel.value) {
+                    lastModel.value = model
+                    // A tint is an index into the blocks being replaced (M-06).
+                    clearReaderHighlight(rv)
+                    val markwon = renderer.markwonFor(c, liveFontScale.value)
+                    adapter.show(markwon, model, detailsState, anchorTargets, seamState)
+                    adapter.notifyDataSetChanged()
                     val lm = rv.layoutManager as? LinearLayoutManager
-                    rv.post { lm?.scrollToPositionWithOffset(initialScroll.index, initialScroll.offset) }
+                    rv.post {
+                        cancelReaderJump(rv)
+                        lm?.scrollToPositionWithOffset(initialScroll.index, initialScroll.offset)
+                    }
                     // Re-evaluate scrollability after the new content lays out (short-doc guard).
                     rv.post { canScroll.value = documentOverflowsViewport(rv) }
                 }
@@ -408,6 +444,7 @@ fun MarkdownPreview(
                     if (focusedPos >= 0) {
                         val lm = rv.layoutManager as? LinearLayoutManager
                         rv.post {
+                            cancelReaderJump(rv)
                             lm?.scrollToPositionWithOffset(focusedPos, 0)
                             rv.post {
                                 val delta = rv.intraBlockMatchDelta(focusedPos, query, focusedOccurrence)
@@ -425,19 +462,38 @@ fun MarkdownPreview(
                     rv.post {
                         // A heading inside a closed <details> section opens it first (M-161).
                         detailsState.reveal(jumpPosition)?.let { adapter.notifyItemRangeChanged(it.first, it.count()) }
-                        val layoutManager = rv.layoutManager as? LinearLayoutManager
-                        if (layoutManager != null) {
-                            // scrollToPositionWithOffset places the item at a pixel offset from the top
-                            layoutManager.scrollToPositionWithOffset(jumpPosition, 0)
-                        } else {
-                            rv.smoothScrollToPosition(jumpPosition)
-                        }
+                        // Eases the heading to the top of the viewport (instantly when animations are off).
+                        smoothJumpTo(rv, jumpPosition)
                         // M-184: performed, so it is acknowledged; a reader composed later never replays it.
                         currentOnJumpHandled.value(jumpSeq)
                     }
                 }
+
+                // (4) Edit to Read with the keyboard open. The restore above put the list back at the
+                // anchor saved when it was full height; the keyboard has since shortened the list, so
+                // the line the user was typing can sit below its bottom edge. Once per switch (the seq),
+                // after the restore's posts and the layout they ask for, bring that block into view.
+                // With no keyboard open nothing is wrong, so nothing moves.
+                if (caretRevealSeq != lastCaretRevealSeq.value && caretRevealBlock >= 0) {
+                    lastCaretRevealSeq.value = caretRevealSeq
+                    rv.post {
+                        val reveal = {
+                            // The reveal arrives after a parse; a reader already scrolling must not be yanked back.
+                            if (currentImeVisible.value && !userDragged.value) {
+                                cancelReaderJump(rv) // a glide would carry the list off the block placed here
+                                revealBlockInViewport(rv, caretRevealBlock)
+                            }
+                            currentOnCaretRevealHandled.value(caretRevealSeq)
+                        }
+                        if (rv.isLaidOut && !rv.isLayoutRequested) reveal() else rv.doOnNextLayout { reveal() }
+                    }
+                }
             },
         )
+
+        // M-172: the model is prepared off Main. Until it lands the reader shows its background, and a
+        // progress indicator only once the wait is long enough to notice (no flash on small files).
+        if (model == null) PreparingIndicator(Modifier.align(Alignment.Center))
 
         // Floating jump-to-top / jump-to-bottom controls (preview only). Subtle, token-colored.
         JumpControls(
@@ -673,6 +729,7 @@ private fun JumpButtons(recyclerView: RecyclerView?, announce: Boolean) {
     val sayWhereItLanded: (String) -> Unit = { if (announce) recyclerView?.announceForAccessibility(it) }
     Column {
         JumpButton(icon = Icons.Filled.KeyboardArrowUp, description = "Scroll to top") {
+            recyclerView?.let { cancelReaderJump(it) }
             (recyclerView?.layoutManager as? LinearLayoutManager)?.scrollToPositionWithOffset(0, 0)
             sayWhereItLanded("Top of document")
         }
@@ -682,7 +739,10 @@ private fun JumpButtons(recyclerView: RecyclerView?, announce: Boolean) {
             // end-of-list clamp turned it into "the end of the document at the bottom of the
             // screen". M-06's spacer removes that clamp, so the resting position is now stated
             // rather than inherited — see `scrollToDocumentEnd`.
-            recyclerView?.let { scrollToDocumentEnd(it) }
+            recyclerView?.let {
+                cancelReaderJump(it)
+                scrollToDocumentEnd(it)
+            }
             sayWhereItLanded("End of document")
         }
     }
@@ -724,23 +784,23 @@ private fun JumpButton(icon: ImageVector, description: String, onClick: () -> Un
 }
 
 /**
- * Populate the adapter for the active render mode: MARKDOWN parses as always; PLAIN
- * injects the pre-built verbatim chunk tree — no parser runs, so Markdown syntax stays literal.
- * A Markdown document nested too deeply to render also gets the chunk tree ([ReaderTree], NEW-11).
+ * Hand the prepared [model] to the adapter. **No parsing happens here** (M-172): the blocks, the
+ * `<details>` sections read off the same tree (M-161) and the heading anchors (M-159) were built off
+ * the main thread by the ViewModel — a document nested too deeply to render (NEW-11) arrives as a
+ * plain model, like a `.txt`. Null empties the reader, so a model being replaced is not kept alive by it.
  */
-private fun MarkwonAdapter.setContentForMode(
+private fun MarkwonAdapter.show(
     markwon: Markwon,
-    content: String,
-    renderMode: RenderMode,
+    model: ReaderModel?,
     details: DetailsState,
     anchors: AnchorTargets,
+    seams: ParagraphSeamState,
 ) {
-    // The shared post-parse passes run before the adapter splits the document into items — and the
-    // <details> sections are read off the same tree the adapter paints (M-161); a chunk tree has none.
-    val document = ReaderTree.build(markwon, content, plain = renderMode == RenderMode.PLAIN)
-    details.load(content, Details.sections(document))
-    anchors.byAnchor = HeadingAnchors.targets(document)
-    setParsedMarkdown(markwon, document)
+    val markdown = model as? ReaderModel.Markdown
+    details.load(model?.content.orEmpty(), markdown?.details.orEmpty())
+    anchors.byAnchor = markdown?.anchors.orEmpty()
+    seams.seams = markdown?.seams ?: ParagraphSeams.NONE
+    setParsedMarkdown(markwon, model?.blocks.orEmpty())
 }
 
 private fun RecyclerView.detailsDecoration(): DetailsDecoration? =

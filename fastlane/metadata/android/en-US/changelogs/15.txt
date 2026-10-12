@@ -1,0 +1,5 @@
+- Very large files open without freezing or crashing the reader.
+- Paragraphs full of formulas open without a freeze.
+- One Read/Edit button instead of the two-part switch.
+- Links and Contents scroll to their target, so you see where you went.
+- Edit to Read keeps the line you just typed above the keyboard.

@@ -27,13 +27,22 @@ class PlainTextChunk(val literal: String, val continuesPrevious: Boolean = false
 object PlainTextBlocks {
 
     /** [maxChunkLines] lets a caller that does not draw on the main thread (the PDF export) opt out of the cap. */
-    fun build(content: String, maxChunkLines: Int = PlainTextChunks.MAX_CHUNK_LINES): Document {
+    fun build(content: String, maxChunkLines: Int = PlainTextChunks.MAX_CHUNK_LINES): Document =
+        build(PlainTextChunks.pieces(content, maxChunkLines))
+
+    /** The document for pieces [PlainTextChunks.pieces] already produced — the chunks share those strings. */
+    fun build(pieces: List<PlainTextChunks.Piece>): Document {
         val document = Document()
-        val pieces = PlainTextChunks.pieces(content, maxChunkLines)
         pieces.forEachIndexed { i, piece ->
             val continuesNext = pieces.getOrNull(i + 1)?.forcedBefore == true
             document.appendChild(PlainTextChunk(piece.literal, piece.forcedBefore, continuesNext))
         }
         return document
     }
+
+    /**
+     * The chunk literals [build] wraps into nodes — exposed so plain-mode search can compute
+     * adapter positions from the same split. Joining with "\n" reproduces [content] exactly.
+     */
+    fun chunkLiterals(content: String): List<String> = PlainTextChunks.split(content)
 }

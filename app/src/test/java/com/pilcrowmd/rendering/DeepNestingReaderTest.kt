@@ -14,10 +14,11 @@ import android.view.ViewGroup
 import android.widget.TextView
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.pilcrowmd.domain.markdown.Details
+import com.pilcrowmd.domain.markdown.ReaderModel
 import com.pilcrowmd.domain.model.RenderMode
 import com.pilcrowmd.domain.model.SearchMatch
 import com.pilcrowmd.domain.usecase.ParseMarkdownHeadingsUseCase
+import com.pilcrowmd.domain.usecase.PrepareReaderModelUseCase
 import com.pilcrowmd.domain.usecase.SearchMarkdownUseCase
 import com.pilcrowmd.export.PdfExporter
 import com.pilcrowmd.export.topLevelBlocksForMode
@@ -38,10 +39,11 @@ import org.robolectric.annotation.GraphicsMode
  * still renders as Markdown.
  *
  * Drives the reader the way the renderer fuzz harness does: the production Markwon chain and adapter,
- * the list populated exactly as `Preview.kt` populates it ([ReaderTree] → [Details.sections] →
- * `setParsedMarkdown`), every item bound, measured, laid out and drawn; then the TOC parse and search,
- * and the PDF export. The test thread's stack is ~1 MB, far below the app's main thread, so an overflow
- * shows up here at a smaller depth than on a device — 400 nested `>` was the fuzz suite's first one.
+ * the list populated exactly as `Preview.kt` populates it (the ViewModel's [PrepareReaderModelUseCase]
+ * → its `<details>` sections → `setParsedMarkdown`), every item bound, measured, laid out and drawn;
+ * then the TOC parse and search, and the PDF export. The test thread's stack is ~1 MB, far below the
+ * app's main thread, so an overflow shows up here at a smaller depth than on a device — 400 nested `>`
+ * was the fuzz suite's first one.
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -67,9 +69,11 @@ class DeepNestingReaderTest {
             searchHighlight = SearchHighlight(query = query),
             details = details,
         )
-        val document = ReaderTree.build(markwon, markdown, plain = false)
-        details.load(markdown, Details.sections(document))
-        adapter.setParsedMarkdown(markwon, document)
+        // The reader model, prepared as the ViewModel prepares it (M-172): the depth fallback lives there now.
+        val model = PrepareReaderModelUseCase(markwon::parse, ParseMarkdownHeadingsUseCase())
+            .prepare(markdown, RenderMode.MARKDOWN)
+        details.load(markdown, (model as? ReaderModel.Markdown)?.details.orEmpty())
+        adapter.setParsedMarkdown(markwon, model.blocks)
 
         val parent = RecyclerView(activity).apply { layoutManager = LinearLayoutManager(activity) }
         val canvas = Canvas(Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888))

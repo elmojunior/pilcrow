@@ -161,6 +161,27 @@ class MarkdownViewModelRenderModeTest {
         assertTrue("toggle offered for .txt", vm.plainToggleAvailable.value)
     }
 
+    /**
+     * A reload publishes an empty TOC like every load, and its text can be the very same String the
+     * current reader model was built from (the fake repository serves one instance, and a cold-start
+     * restore racing an explicit open of the same file does the same). The model is then reused
+     * rather than re-parsed — and the reuse must re-publish its TOC, or the drawer stays empty.
+     * Found by CI on PR #225 as an intermittent failure of [togglePersistsOverrideAcrossReload].
+     */
+    @Test
+    fun reloadingTheSameTextRestoresTheToc() {
+        val vm = vmWith("# heading")
+        vm.loadAndAwait(mdUri)
+        awaitValue(1, "first load extracts headings") { vm.headings.value.size }
+        val firstId = vm.currentDocument.value!!.id
+
+        vm.loadFile(mdUri)
+        // The publish that replaces the document empties the TOC in the same step, so once the new
+        // identity is visible the TOC has been reset — the await below cannot pass on the old value.
+        awaitValue(true, "the reload published") { vm.currentDocument.value?.id != firstId }
+        awaitValue(1, "the reload's TOC was restored from the reused model") { vm.headings.value.size }
+    }
+
     @Test
     fun mdDefaultsToMarkdownAndToggleIsAbsent() {
         val vm = vmWith("# heading")

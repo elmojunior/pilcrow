@@ -1,17 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 pleree
 
+@file:Suppress("TooManyFunctions") // one cohesive M-06 surface; splitting it scatters the coupling below
+
 package com.pilcrowmd.rendering
 
+import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.Typeface
+import android.text.TextPaint
+import android.util.TypedValue
 import android.view.View
 import android.view.ViewGroup
 import androidx.annotation.ColorInt
 import androidx.core.view.doOnNextLayout
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.pilcrowmd.ui.theme.PilcrowTypography
+import com.pilcrowmd.ui.theme.PreviewLineHeightMultiplier
+import kotlin.math.roundToInt
 
 /**
  * The reader list's scroll geometry — the two halves of M-06, kept together because changing
@@ -40,14 +49,44 @@ import androidx.recyclerview.widget.RecyclerView
  * emits footnote markers is shared by the reader (Dark/Light) and the PDF export (Print), so
  * nothing on this path may pick a colour for itself. The caller is the composable that owns the
  * scheme.
+ *
+ * [bodyLineHeightPx] sizes the end-of-document space (two body lines, see [ReaderJumpDecoration]);
+ * the reader measures it with [readerBodyLineHeightPx] and moves it with [setReaderBodyLineHeight]
+ * when the font scale or set changes. 0 means no tail until it is set.
  */
-fun applyReaderJumpBehaviour(recyclerView: RecyclerView, @ColorInt highlightColor: Int) {
-    recyclerView.addItemDecoration(ReaderJumpDecoration(highlightColor))
+fun applyReaderJumpBehaviour(recyclerView: RecyclerView, @ColorInt highlightColor: Int, bodyLineHeightPx: Int = 0) {
+    recyclerView.addItemDecoration(ReaderJumpDecoration(highlightColor, bodyLineHeightPx))
 }
 
 /** Back-compat entry point for the spacer alone — used by tests that do not exercise the highlight. */
-fun applyReaderBottomSpacer(recyclerView: RecyclerView) {
-    applyReaderJumpBehaviour(recyclerView, android.graphics.Color.TRANSPARENT)
+fun applyReaderBottomSpacer(recyclerView: RecyclerView, bodyLineHeightPx: Int = 0) {
+    applyReaderJumpBehaviour(recyclerView, android.graphics.Color.TRANSPARENT, bodyLineHeightPx)
+}
+
+/**
+ * The height of one line of reader body text, in px — what `TextView.getLineHeight()` reports for a
+ * prose block ([ProseBlockEntry] sets the body size, `setLineSpacing(0, PreviewLineHeightMultiplier)`
+ * and the reading typeface). MEASURED with the same paint arithmetic as the TextView
+ * (`round(fontMetricsInt * spacingMult)`), because the end-of-document space is defined in body
+ * lines and a constant in dp would drift from the text at every font scale and font set.
+ */
+fun readerBodyLineHeightPx(context: Context, fontScale: Float, typeface: Typeface?): Int {
+    val paint = TextPaint()
+    paint.typeface = typeface
+    paint.textSize = TypedValue.applyDimension(
+        TypedValue.COMPLEX_UNIT_SP,
+        PilcrowTypography.PROSE_BODY_FONT_SIZE_SP * fontScale,
+        context.resources.displayMetrics,
+    )
+    return (paint.getFontMetricsInt(null) * PreviewLineHeightMultiplier).roundToInt()
+}
+
+/** Re-size the end-of-document space after a font scale or set change. Inert without a decoration. */
+fun setReaderBodyLineHeight(recyclerView: RecyclerView, bodyLineHeightPx: Int) {
+    val decoration = recyclerView.jumpDecoration() ?: return
+    if (decoration.bodyLineHeightPx == bodyLineHeightPx) return
+    decoration.bodyLineHeightPx = bodyLineHeightPx
+    recyclerView.invalidateItemDecorations()
 }
 
 /**
@@ -61,13 +100,15 @@ fun applyReaderBottomSpacer(recyclerView: RecyclerView) {
  * (`findFirstVisibleItemPosition() == -1`). A decoration grows the last item's occupied space
  * instead, which extends the scroll range and leaves the viewport whole.
  *
- * The headroom is one fifth of the viewport: some space after the end, but never a near-blank
- * screen when the reader scrolls all the way down. The price is accepted: a jump to a heading, a
- * search match or a `#link` near the end stops where the document ends, rather than putting the
- * target at the top. It is read from [RecyclerView.getHeight] at offset time so it follows rotation
- * without being recomputed anywhere.
+ * The headroom is [TAIL_LINES] body lines: a little air after the end, so the last line does not
+ * sit hard against the screen edge, but never a near-blank screen when the reader scrolls all the
+ * way down (M-98 first made it a fifth of the viewport; that grew with the screen, two lines do
+ * not). The price is accepted: a jump to a heading, a search match or a `#link` near the end stops
+ * where the document ends, rather than putting the target at the top. The line height is set by the
+ * reader ([setReaderBodyLineHeight]) because it follows the font scale and set, not the viewport.
  */
-private class ReaderJumpDecoration(@ColorInt highlightColor: Int) : RecyclerView.ItemDecoration() {
+private class ReaderJumpDecoration(@ColorInt highlightColor: Int, var bodyLineHeightPx: Int) :
+    RecyclerView.ItemDecoration() {
 
     private val highlightPaint = Paint().apply { color = highlightColor }
 
@@ -82,7 +123,7 @@ private class ReaderJumpDecoration(@ColorInt highlightColor: Int) : RecyclerView
         // -1, and `getChildAdapterPosition` returns NO_POSITION — also -1 — for a view on its way
         // out. Without this the two compare equal and a departing view is handed the tail offset
         // mid-flight. Raised in review.
-        outRect.bottom = if (position >= 0 && position == lastPosition) parent.height / TAIL_FRACTION else 0
+        outRect.bottom = if (position >= 0 && position == lastPosition) TAIL_LINES * bodyLineHeightPx else 0
     }
 
     override fun onDraw(canvas: Canvas, parent: RecyclerView, state: RecyclerView.State) {
@@ -130,8 +171,8 @@ private class ReaderJumpDecoration(@ColorInt highlightColor: Int) : RecyclerView
         /** Long enough for the eye to find the block, short enough not to sit on the page. */
         const val HIGHLIGHT_MILLIS = 1_200L
 
-        /** The headroom below the last block, as a fraction of the viewport: one fifth. */
-        const val TAIL_FRACTION = 5
+        /** The headroom below the last block, in body lines. */
+        const val TAIL_LINES = 2
     }
 }
 
@@ -236,5 +277,48 @@ fun scrollToDocumentEnd(recyclerView: RecyclerView) {
     recyclerView.doOnNextLayout {
         val lastChild = layoutManager.findViewByPosition(lastPosition) ?: return@doOnNextLayout
         recyclerView.scrollBy(0, lastChild.bottom - recyclerView.height)
+    }
+}
+
+/**
+ * Bring the block at adapter [position] fully into the list's visible area with the LEAST scrolling,
+ * instantly. The reader uses it to put the line the user was typing above an open keyboard: the
+ * saved scroll anchor was taken when the list was full height, and a list shrunk by the keyboard
+ * ends higher up, so the bottom of what was on screen can sit below the new bottom edge.
+ *
+ * A block below the edge is bottom-aligned against it, a block above is top-aligned, one already
+ * inside stays where it is. A block taller than the viewport is bottom-aligned whatever its state:
+ * the caret line is usually at its end, and showing the end of it beats showing the start. A block
+ * that is not laid out at all is brought in with `scrollToPositionWithOffset` and, when it was
+ * below, bottom-aligned once it has a height.
+ *
+ * Instant on purpose: this corrects where the restore put the list, it is not a jump the eye
+ * should follow. No-op for a position the adapter does not have.
+ */
+fun revealBlockInViewport(recyclerView: RecyclerView, position: Int) {
+    val layoutManager = recyclerView.layoutManager as? LinearLayoutManager ?: return
+    if (position !in 0 until (recyclerView.adapter?.itemCount ?: 0)) return
+    val block = layoutManager.findViewByPosition(position)
+    if (block != null) {
+        alignIntoViewport(recyclerView, block)
+        return
+    }
+    val wasBelow = position > layoutManager.findLastVisibleItemPosition()
+    layoutManager.scrollToPositionWithOffset(position, 0)
+    if (wasBelow) {
+        recyclerView.doOnNextLayout {
+            val laidOut = layoutManager.findViewByPosition(position) ?: return@doOnNextLayout
+            recyclerView.scrollBy(0, laidOut.bottom - (recyclerView.height - recyclerView.paddingBottom))
+        }
+    }
+}
+
+private fun alignIntoViewport(recyclerView: RecyclerView, block: View) {
+    val bottomEdge = recyclerView.height - recyclerView.paddingBottom
+    if (block.top >= 0 && block.bottom <= bottomEdge) return
+    if (block.bottom > bottomEdge || block.height > bottomEdge) {
+        recyclerView.scrollBy(0, block.bottom - bottomEdge)
+    } else {
+        recyclerView.scrollBy(0, block.top)
     }
 }

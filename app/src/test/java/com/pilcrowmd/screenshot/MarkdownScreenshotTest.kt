@@ -19,6 +19,7 @@ import com.github.takahirom.roborazzi.captureRoboImage
 import com.pilcrowmd.domain.model.ThemeMode
 import com.pilcrowmd.rendering.MathSourceSpan
 import com.pilcrowmd.rendering.warmedMarkwonRenderer
+import com.pilcrowmd.testing.readerModelFor
 import com.pilcrowmd.ui.components.MarkdownPreview
 import com.pilcrowmd.ui.theme.DarkColorScheme
 import com.pilcrowmd.ui.theme.LightColorScheme
@@ -121,10 +122,9 @@ class MarkdownScreenshotTest(private val case: ScreenshotCase) {
             ) {
                 CompositionLocalProvider(LocalMDColors provides colorScheme) {
                     MarkdownPreview(
-                        content = case.sample.markdown,
+                        model = remember { renderer.readerModelFor(case.sample.markdown, case.sample.renderMode) },
                         renderer = renderer,
                         fontScale = case.fontScale,
-                        renderMode = case.sample.renderMode,
                     )
                 }
             }

@@ -9,22 +9,26 @@ import android.os.Looper
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.test.core.app.ApplicationProvider
 import com.pilcrowmd.di.AppInfo
+import com.pilcrowmd.domain.markdown.PlainReason
+import com.pilcrowmd.domain.markdown.ReaderModel
 import com.pilcrowmd.domain.model.RenderMode
 import com.pilcrowmd.domain.usecase.ParseMarkdownHeadingsUseCase
+import com.pilcrowmd.domain.usecase.PrepareReaderModelUseCase
 import com.pilcrowmd.domain.usecase.SearchMarkdownUseCase
 import com.pilcrowmd.repository.FileRepository
 import com.pilcrowmd.repository.FileText
 import com.pilcrowmd.storage.LocalStorageManager
 import com.pilcrowmd.storage.ScrollAnchor
 import com.pilcrowmd.storage.StorageManager
-import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.commonmark.node.Node
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -36,8 +40,8 @@ import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
-import org.robolectric.shadows.ShadowLog
 import java.io.IOException
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -131,22 +135,44 @@ class MarkdownViewModelLoadPublishOnceTest {
     }
 
     @After
-    fun tearDown() = storageScope.cancel()
+    fun tearDown() {
+        recorders.forEach { it.cancel() }
+        storageScope.cancel()
+    }
 
+    private val headingsUseCase = ParseMarkdownHeadingsUseCase()
+
+    /** [parse] is the reader model's one whole-document parse — the TOC comes from it (M-179). */
     private fun vm(
         repo: FileRepository,
         storage: StorageManager = realStorage,
-        parse: ParseMarkdownHeadingsUseCase = ParseMarkdownHeadingsUseCase(),
+        parse: (String) -> Node = headingsUseCase::parseTree,
     ) = MarkdownViewModel(
         repository = repo,
         storage = storage,
-        parseHeadingsUseCase = parse,
-        searchUseCase = SearchMarkdownUseCase(parse),
+        parseHeadingsUseCase = headingsUseCase,
+        searchUseCase = SearchMarkdownUseCase(headingsUseCase),
         pdfExporter = mockk(relaxed = true),
         appInfo = object : AppInfo {
             override val versionName = "test"
         },
+        prepareReaderModel = PrepareReaderModelUseCase(parse, headingsUseCase),
     )
+
+    /**
+     * Every TOC [MarkdownViewModel.headings] publishes from now on, recorded as it happens.
+     * Unconfined, so a value that is replaced a moment later is still seen — a late result can
+     * therefore be caught even when a correct one overwrites it afterwards.
+     */
+    private fun MarkdownViewModel.recordHeadings(): MutableList<List<String>> {
+        val seen = CopyOnWriteArrayList<List<String>>()
+        recorders += CoroutineScope(Dispatchers.Unconfined).launch {
+            headings.collect { list -> seen += list.map { it.text } }
+        }
+        return seen
+    }
+
+    private val recorders = mutableListOf<Job>()
 
     private fun awaitTrue(message: String, condition: () -> Boolean) {
         val deadline = System.currentTimeMillis() + AWAIT_TIMEOUT_MS
@@ -250,20 +276,18 @@ class MarkdownViewModelLoadPublishOnceTest {
 
     @Test
     fun `a heading parser that throws still opens the document, without a TOC`() {
-        // Safeguard 3. The TOC pass runs in its own coroutine after the document is shown, so a
-        // parser throw must degrade to no TOC rather than escape and crash the app.
-        val parse = mockk<ParseMarkdownHeadingsUseCase>()
-        every { parse.extractHeadings(any()) } throws IllegalStateException("parser blew up")
-        val vm = vm(Repo(), parse = parse)
+        // Safeguard 3. The reader model (and with it the TOC) is prepared in its own coroutine after
+        // the document is shown, so a parser throw must degrade rather than escape and crash the app.
+        val vm = vm(Repo(), parse = { throw IllegalStateException("parser blew up") })
 
         vm.loadFile(bUri)
         awaitTrue("B never opened") {
             vm.currentDocument.value?.uri == bUri && vm.fileLoadState.value == FileLoadState.Success
         }
-        // The TOC starts empty on a publish, so the assertion below means nothing until the TOC pass
-        // has actually run into the throw. Its fallback logs; wait for that line.
-        awaitTrue("the TOC pass never reached the parser's throw") {
-            ShadowLog.getLogsForTag("MarkdownViewModel").any { it.msg.startsWith("heading extraction failed") }
+        // The TOC starts empty on a publish, so the assertion below means nothing until the
+        // preparation has actually run into the throw: it answers with the plain model.
+        awaitTrue("the preparation never reached the parser's throw") {
+            (vm.readerModel.value as? ReaderModel.Plain)?.reason == PlainReason.UNRENDERABLE
         }
         settleMain()
 
@@ -272,10 +296,11 @@ class MarkdownViewModelLoadPublishOnceTest {
     }
 
     /**
-     * The TOC is the one value that follows the document: a full parse, about two seconds on a 25 MB
-     * file, that the reader must not wait for. S (`slow.md`) opens with its TOC pass held inside the
-     * parser; each test then replaces what S's pass was computed for, releases it, and checks that
-     * its headings were dropped.
+     * The TOC is the one value that follows the document: it comes from the reader model's parse,
+     * seconds on a large file, that the document must not wait for. S (`slow.md`) opens with that
+     * parse held inside the parser; each test then replaces what S's parse was for, releases it, and
+     * checks that S's headings were NEVER published — recorded as they happen, because parses are
+     * serialised (M-179), so the replacement's own TOC always lands after S's would have.
      */
     private inner class SlowToc {
         val sUri: Uri = Uri.parse("content://t/slow.md")
@@ -284,15 +309,12 @@ class MarkdownViewModelLoadPublishOnceTest {
         private val sEntered = CountDownLatch(1)
         private val sRelease = CountDownLatch(1)
         private val sReturned = AtomicBoolean(false)
-        private val parse = mockk<ParseMarkdownHeadingsUseCase>().also { parse ->
-            every { parse.extractHeadings(any()) } answers {
-                val content = firstArg<String>()
-                if (content == sDisk) {
-                    sEntered.countDown()
-                    sRelease.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-                }
-                real.extractHeadings(content).also { if (content == sDisk) sReturned.set(true) }
+        private val parse: (String) -> Node = { content ->
+            if (content == sDisk) {
+                sEntered.countDown()
+                sRelease.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             }
+            real.parseTree(content).also { if (content == sDisk) sReturned.set(true) }
         }
         val vm = vm(Repo(contents = mapOf(sUri to sDisk, bUri to bDisk)), parse = parse)
 
@@ -318,13 +340,13 @@ class MarkdownViewModelLoadPublishOnceTest {
         val f = SlowToc()
         f.openS()
         f.vm.loadFile(bUri)
-        awaitTrue("B never opened with its own TOC") {
-            f.vm.currentDocument.value?.uri == bUri && f.vm.headings.value.map { it.text } == listOf("Bee")
-        }
+        awaitTrue("B never opened") { f.vm.currentDocument.value?.uri == bUri }
+        val seen = f.vm.recordHeadings()
 
         f.releaseS()
+        awaitTrue("B never got its own TOC") { f.vm.headings.value.map { it.text } == listOf("Bee") }
 
-        assertEquals("S's TOC landed on B", listOf("Bee"), f.vm.headings.value.map { it.text })
+        assertTrue("S's TOC landed on B: $seen", seen.none { it == listOf("Slow") })
     }
 
     @Test
@@ -337,9 +359,14 @@ class MarkdownViewModelLoadPublishOnceTest {
         awaitTrue("the new document never opened") {
             f.vm.currentDocument.value?.isUnsaved == true && f.vm.fileLoadState.value == FileLoadState.Success
         }
+        val seen = f.vm.recordHeadings()
 
         f.releaseS()
+        awaitTrue("the new document's model never landed") {
+            f.vm.readerModel.value?.content == f.vm.currentDocument.value?.content
+        }
 
+        assertTrue("S's TOC landed on the new document: $seen", seen.none { it == listOf("Slow") })
         assertTrue("S's TOC landed on the new document", f.vm.headings.value.isEmpty())
     }
 
@@ -356,9 +383,12 @@ class MarkdownViewModelLoadPublishOnceTest {
         }
         settleMain()
         assertEquals("the toggle did not switch S to plain", RenderMode.PLAIN, f.vm.renderMode.value)
+        val seen = f.vm.recordHeadings()
 
         f.releaseS()
+        awaitTrue("S's plain model never landed") { f.vm.readerModel.value?.renderMode == RenderMode.PLAIN }
 
+        assertTrue("S's Markdown TOC landed on its plain rendering: $seen", seen.none { it == listOf("Slow") })
         assertTrue("S's Markdown TOC landed on its plain rendering", f.vm.headings.value.isEmpty())
     }
 

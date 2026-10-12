@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onRoot
+import com.pilcrowmd.testing.readerModelFor
 import com.pilcrowmd.ui.components.MarkdownPreview
 import com.pilcrowmd.ui.theme.DarkColorScheme
 import org.junit.Rule
@@ -59,7 +60,7 @@ class MarkwonRendererLargeFileTest {
                     .background(DarkColorScheme.primaryBackground),
             ) {
                 MarkdownPreview(
-                    content = largeMarkdown,
+                    model = remember { renderer.readerModelFor(largeMarkdown) },
                     renderer = renderer,
                     fontScale = 1.0f,
                 )

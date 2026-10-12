@@ -10,6 +10,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.test.core.app.ApplicationProvider
 import com.pilcrowmd.rendering.MarkwonRenderer
 import com.pilcrowmd.rendering.warmedMarkwonRenderer
+import com.pilcrowmd.testing.bigParagraph
 import com.pilcrowmd.ui.theme.PrintColorScheme
 import io.mockk.every
 import io.mockk.mockk
@@ -769,6 +770,21 @@ class PdfExporterTest {
         val firstPass = builder.measureBlockBounds(renderer.markwon, nodes, widthPx, 1.0f)
         val secondPass = builder.measureBlockBounds(renderer.markwon, nodes, widthPx, 1.0f)
         assertEquals("Re-measuring the same nodes must be deterministic", firstPass, secondPass)
+    }
+
+    @Test
+    fun parseTopLevelBlocks_keepsAHugeParagraphWholeInsteadOfSplittingIt() {
+        // M-328: the reader cuts a paragraph of more than 150 inline children into pieces; the PDF
+        // lays its pages out off the main thread and prints the paragraph whole.
+        val content = "# H\n\n" + bigParagraph(110)
+
+        val nodes = parseTopLevelBlocks(renderer.markwon, content)
+
+        assertEquals("heading + ONE paragraph", 2, nodes.size)
+        val paragraph = nodes[1]
+        assertTrue(paragraph is org.commonmark.node.Paragraph)
+        val children = generateSequence(paragraph.firstChild) { it.next }.count()
+        assertTrue("the paragraph is whole: $children inline children", children > 150)
     }
 
     /** Depth-first search for the first descendant with [id]. */

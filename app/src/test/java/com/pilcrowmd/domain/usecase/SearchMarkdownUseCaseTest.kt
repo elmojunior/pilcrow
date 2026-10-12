@@ -3,7 +3,11 @@
 
 package com.pilcrowmd.domain.usecase
 
+import com.pilcrowmd.domain.markdown.AdapterBlocks
 import com.pilcrowmd.domain.model.SearchMatch
+import com.pilcrowmd.testing.bigParagraph
+import org.commonmark.node.Node
+import org.commonmark.node.Text
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -529,6 +533,32 @@ class SearchMarkdownUseCaseTest {
 
         assertEquals(1, matches.size)
         assertEquals(1, matches[0].adapterPosition)
+    }
+
+    private fun textOf(node: Node): String = buildString {
+        fun walk(x: Node) {
+            if (x is Text) append(x.literal)
+            generateSequence(x.firstChild) { it.next }.forEach { walk(it) }
+        }
+        walk(node)
+    }
+
+    @Test
+    fun `a match in a later piece of a split paragraph reports that piece's adapter position`() {
+        // The needle sits in repetition 40, about child 360 of the paragraph: the third piece.
+        val content = "# One\n\n" + bigParagraph(450, tailAt = 40, tail = " needleword") + "\n\n## Two needleword\n"
+
+        val matches = useCase.findSearchMatches(content, "needleword")
+
+        val blocks = AdapterBlocks.of(parseHeadingsUseCase.parseDocument(content)!!)
+        val piece = blocks.indexOfFirst { textOf(it).contains("needleword") }
+        assertTrue("the paragraph was cut: the needle is past block 2, got $piece", piece > 2)
+        assertTrue("many pieces, got ${blocks.size} blocks", blocks.size > 5)
+        assertEquals(2, matches.size)
+        assertEquals(piece, matches[0].adapterPosition)
+        assertEquals(0, matches[0].occurrenceInBlock)
+        assertEquals("the heading follows every piece", blocks.size - 1, matches[1].adapterPosition)
+        assertEquals(0, matches[1].occurrenceInBlock)
     }
 
     /**

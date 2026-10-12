@@ -7,12 +7,14 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.pilcrowmd.domain.markdown.PlainTextChunks
+import com.pilcrowmd.domain.markdown.ReaderModel
 import com.pilcrowmd.domain.model.DocumentKind
 import com.pilcrowmd.domain.model.HeadingNode
 import com.pilcrowmd.domain.model.RenderMode
 import com.pilcrowmd.domain.model.SearchMatch
 import com.pilcrowmd.domain.model.ThemeMode
 import com.pilcrowmd.domain.usecase.ParseMarkdownHeadingsUseCase
+import com.pilcrowmd.domain.usecase.PrepareReaderModelUseCase
 import com.pilcrowmd.domain.usecase.SearchMarkdownUseCase
 import com.pilcrowmd.export.PdfExporter
 import com.pilcrowmd.repository.FileRepository
@@ -26,6 +28,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -122,6 +125,13 @@ constructor(
      * production always uses the default. Defaulted, so `provideFactory` and the AppContainer are untouched.
      */
     private val cpuDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.Default,
+    /**
+     * Builds what the reader paints (M-172, M-179). `provideFactory` passes the reader's own Markwon
+     * parse; the default parses with the TOC's parity parser, whose top-level blocks are the same
+     * (ParseParityTest), so a test that only reads positions, the TOC or search sees production's.
+     */
+    private val prepareReaderModel: PrepareReaderModelUseCase =
+        PrepareReaderModelUseCase(parseHeadingsUseCase::parseTree, parseHeadingsUseCase),
 ) : ViewModel() {
     // The open document and everything derived from it. This class READS all of it, but can
     // replace the document only through the slot's adjudicated doors (M-109) — see [DocumentSlot].
@@ -149,8 +159,7 @@ constructor(
             slot.setRendering(doc.id, renderMode = next)
             // An unsaved document has no URI to key an override on; the in-memory mode still flips.
             doc.uri?.let { storage.setRenderModeOverride(it, next) }
-            refreshHeadings(doc.id, doc.content)
-            refreshActiveSearch()
+            refreshActiveSearch() // the TOC follows the new render mode through [readerModel]
         }
     }
 
@@ -178,16 +187,6 @@ constructor(
             renderMode = override ?: defaultRenderMode(kind),
             plainToggleAvailable = kind == DocumentKind.PLAIN_TEXT,
         )
-    }
-
-    /** Headings feed the TOC drawer, for document [expected] only, and only if no newer pass has started. */
-    private suspend fun refreshHeadings(expected: DocumentId, content: String) {
-        val generation = ++headingsGeneration
-        val headings = headingsOrEmpty(content, slot.renderMode.value)
-        // A newer load, mode toggle or Save-As owns the TOC now; this result is for older content.
-        if (generation == headingsGeneration) {
-            slot.setRendering(expected, headings = headings)
-        }
     }
 
     // Transient = the open document holds no persisted *write* grant (e.g. opened read-only via
@@ -267,6 +266,11 @@ constructor(
 
     // Per-file scroll-position memory (keyed by document URI)
     private val _fileScrollPositions = mutableMapOf<String, Int>()
+
+    // Edit to Read: the reader block the caret was in. Each switch to the reader takes a new seq.
+    private var caretRevealSeq = 0
+    private val _caretReveal = MutableStateFlow<CaretReveal?>(null)
+    val caretReveal: StateFlow<CaretReveal?> = _caretReveal.asStateFlow()
 
     // A file arriving from an intent while another dirty file is open is held here
     // until the user resolves the unsaved-changes prompt (Save/Discard). null = no pending open.
@@ -499,13 +503,8 @@ constructor(
         val publication = prepareLoad(uri, content, notUtf8 = !file.isUtf8)
         when (slot.publish(claim, publication, policy)) {
             PublishOutcome.PUBLISHED -> {
-                // The TOC is the one value allowed to arrive AFTER the document: heading extraction
-                // is a full parse, about two seconds on a 25 MB file, and the reader must not wait
-                // for it. UNDISPATCHED, so this pass is registered before anything else can start
-                // one; a newer pass supersedes it and its result is dropped (refreshHeadings).
-                viewModelScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
-                    refreshHeadings(publication.document.id, content)
-                }
+                // The TOC is the one value allowed to arrive AFTER the document: it comes from the
+                // reader model, which [readerModel] prepares off Main once the document is published.
                 finishLoad(claim, FileLoadState.Success)
                 // Persist as last file + record in recents. The pointer is written only while this
                 // load is still what is on screen, so it cannot name a file the user moved away
@@ -576,28 +575,56 @@ constructor(
     private fun defaultRenderMode(kind: DocumentKind): RenderMode =
         if (kind == DocumentKind.PLAIN_TEXT) RenderMode.PLAIN else RenderMode.MARKDOWN
 
-    /**
-     * Bumped by every [refreshHeadings] pass, on Main. A pass applies its result only if the counter
-     * still holds the value it took, so a slow parse of an earlier document (or of the other render
-     * mode) can never overwrite the TOC of what is on screen now.
-     */
-    private var headingsGeneration = 0L
+    // ── The reader model (M-172, M-179) ───────────────────────────────────────────────────────
+    //
+    // What the reader paints, prepared OFF MAIN, ONCE per version of the text, and shared: the
+    // reader renders it (it never parses), and the TOC is taken from it. Keyed by text identity +
+    // render mode, so a font-scale, theme or pinch rebuild, or an editor round trip with no edits,
+    // reuses it instead of parsing again.
+    private val _readerModel = MutableStateFlow<ReaderModel?>(null)
+    val readerModel: StateFlow<ReaderModel?> = _readerModel.asStateFlow()
 
-    /**
-     * The TOC for the given content. **Safeguard 3:** a parser throw degrades to no TOC instead of
-     * escaping — the load's pass runs in its own coroutine after the document is shown, where an
-     * uncaught throw would crash the app. `Exception` only: an `Error` (OOM) still propagates.
-     */
-    @Suppress("TooGenericExceptionCaught")
-    private suspend fun headingsOrEmpty(content: String, renderMode: RenderMode): List<HeadingNode> {
-        if (renderMode == RenderMode.PLAIN) return emptyList()
-        return try {
-            withContext(Dispatchers.Default) { parseHeadingsUseCase.extractHeadings(content) }
-        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            android.util.Log.e("MarkdownViewModel", "heading extraction failed; opening without a TOC", e)
-            emptyList()
+    // The document the last model was prepared for. Lets an edited document go un-prepared while the
+    // editor is open (it is prepared again when the reader comes back) without skipping the first
+    // preparation of a document opened straight into the editor, whose TOC is needed there too.
+    private var readerModelPreparedFor: DocumentId? = null
+
+    init {
+        viewModelScope.launch {
+            kotlinx.coroutines.flow.combine(slot.document, slot.renderMode, slot.mode, ::Triple)
+                // Latest wins: a newer text or mode cancels a preparation in flight (which is joined
+                // first, so at most one parse runs at a time) and its result is never published.
+                .collectLatest { (doc, renderMode, mode) -> refreshReaderModel(doc, renderMode, mode) }
+        }
+    }
+
+    private suspend fun refreshReaderModel(doc: Document?, renderMode: RenderMode, mode: ViewMode) {
+        // FIRST, before any branch: this can be called INLINE from inside `DocumentSlot.publish`
+        // (Main.immediate resumes the collector synchronously when the document is set), and publish
+        // still has the rest of its fields to write — the render mode, and an empty TOC. Yielding lets
+        // that publish finish, so a half-applied pair is cancelled here instead of costing a parse,
+        // and a TOC set below cannot be reset by the very publish that triggered it (PR #225 CI).
+        kotlinx.coroutines.yield()
+        val current = _readerModel.value
+        when {
+            doc == null -> _readerModel.value = null
+            // The same text (Save-As adopting a new identity, or a reload serving the same String):
+            // reuse the model — but re-publish its TOC for this document, because a load's publish
+            // resets the TOC to empty and nothing else would fill it again.
+            current != null && current.content === doc.content && current.renderMode == renderMode -> {
+                readerModelPreparedFor = doc.id
+                slot.setRendering(doc.id, headings = current.tocHeadings)
+            }
+            // Typing: release the tree now rather than carry it next to the editor's own copy of the
+            // text (M-154); the reader prepares a fresh one when it comes back.
+            mode == ViewMode.EDITOR && readerModelPreparedFor == doc.id -> _readerModel.value = null
+            else -> {
+                _readerModel.value = null // drop the old tree before the new one is built
+                val model = withContext(cpuDispatcher) { prepareReaderModel.prepare(doc.content, renderMode) }
+                readerModelPreparedFor = doc.id
+                slot.setRendering(doc.id, headings = model.tocHeadings)
+                _readerModel.value = model
+            }
         }
     }
 
@@ -774,13 +801,47 @@ constructor(
 
     fun toggleMode() {
         viewModelScope.launch {
+            val before = slot.mode.value
             slot.mode.update { if (it == ViewMode.READER) ViewMode.EDITOR else ViewMode.READER }
+            refreshCaretReveal(before)
         }
     }
 
-    /** Set the view mode directly (used by the segmented Reader/Editor toggle). */
+    /** Set the view mode directly (used by the toolbar's Read/Edit mode button). */
     fun setMode(mode: ViewMode) {
-        viewModelScope.launch { slot.mode.value = mode }
+        viewModelScope.launch {
+            val before = slot.mode.value
+            slot.mode.value = mode
+            refreshCaretReveal(before)
+        }
+    }
+
+    /**
+     * After a mode change from [before]: drop the old reveal, and on a switch Edit to Read publish
+     * the block the caret sat in. Plain-text rendering has no blocks to point at, so it publishes
+     * nothing; that includes a document past the Markdown ceiling, which must not be parsed (M-179).
+     * The block is found off Main, so a newer switch or a different document that arrives meanwhile
+     * takes over (the seq no longer matches) and this result is dropped.
+     */
+    private suspend fun refreshCaretReveal(before: ViewMode) {
+        val seq = ++caretRevealSeq
+        _caretReveal.value = null
+        val doc = slot.document.value ?: return
+        if (before != ViewMode.EDITOR || slot.mode.value != ViewMode.READER) return
+        if (prepareReaderModel.showsAsPlain(doc.content, slot.renderMode.value)) return
+        val caret = slot.editorCursor.value
+        val block = withContext(cpuDispatcher) { parseHeadingsUseCase.readerBlockForOffset(doc.content, caret) }
+        if (block != null && seq == caretRevealSeq && slot.document.value?.id == doc.id) {
+            _caretReveal.value = CaretReveal(block, seq)
+        }
+    }
+
+    /**
+     * The reader performed (or, with no keyboard open, skipped) reveal [seq]. Only the matching seq
+     * clears it, so a late report for an older switch never drops a newer one (as [onHeadingJumpHandled]).
+     */
+    fun onCaretRevealHandled(seq: Int) {
+        if (_caretReveal.value?.seq == seq) _caretReveal.value = null
     }
 
     fun updatePreviewScroll(anchor: ScrollAnchor) {
@@ -811,15 +872,21 @@ constructor(
             _searchQuery.emit(query)
             if (query.isNotEmpty()) {
                 val content = slot.document.value?.content ?: return@launch
+                val renderMode = slot.renderMode.value
+                // The model, only if it is the one for this text and mode (a toggle re-runs search
+                // before the new model exists).
+                val model = _readerModel.value?.takeIf { it.content === content && it.renderMode == renderMode }
                 // Search parses + scans the whole document — run it off the main thread so a
                 // large file (or a common term with thousands of hits) can't freeze the UI / ANR.
-                // Plain mode: the visible text IS the literal source, so match over the
-                // same chunk split the plain render uses (adapter positions align).
+                // Shown as plain (the mode, or past the Markdown ceiling): the visible text IS the
+                // literal source, so match over the chunks the reader paints (positions align) —
+                // the model's own when there is one, so a huge file is not chunked a second time.
                 val matches = withContext(cpuDispatcher) {
-                    if (slot.renderMode.value == RenderMode.PLAIN) {
-                        searchUseCase.findPlainSearchMatches(PlainTextChunks.split(content), query)
-                    } else {
-                        searchUseCase.findSearchMatches(content, query)
+                    when {
+                        model is ReaderModel.Plain -> searchUseCase.findPlainSearchMatches(model.chunkLiterals, query)
+                        model == null && prepareReaderModel.showsAsPlain(content, renderMode) ->
+                            searchUseCase.findPlainSearchMatches(PlainTextChunks.split(content), query)
+                        else -> searchUseCase.findSearchMatches(content, query)
                     }
                 }
                 // No re-check needed here: the scan does not stop when cancelled, but withContext
@@ -907,9 +974,13 @@ constructor(
         // current (load, re-open, new document) or none does (close), drop any jump not yet
         // performed, or the new document's reader runs it at a position from the old one. Same key
         // as the search reset in the first init block: Save-As keeps the DocumentId, so it keeps the
-        // jump. A separate init block because it must run after `_headingJump` is initialised.
+        // jump. The pending caret reveal goes the same way. A separate init block because it must
+        // run after `_headingJump` and `_caretReveal` are initialised.
         viewModelScope.launch {
-            slot.document.map { it?.id }.distinctUntilChanged().collect { _headingJump.value = null }
+            slot.document.map { it?.id }.distinctUntilChanged().collect {
+                _headingJump.value = null
+                _caretReveal.value = null
+            }
         }
     }
 
@@ -1067,8 +1138,7 @@ constructor(
                             // rebuilt from the captured content, and `lastFileUri` would make the
                             // next launch open a file the user was not looking at — which is
                             // M-145's shape exactly.
-                            applyDerivedRenderMode(savedId, targetUri, displayName)
-                            refreshHeadings(savedId, doc.content)
+                            applyDerivedRenderMode(savedId, targetUri, displayName) // the TOC follows via [readerModel]
                             refreshActiveSearch()
                             storage.saveLastFileUri(targetUri)
                         }
@@ -1428,6 +1498,11 @@ constructor(
                         searchUseCase = container.searchMarkdownUseCase,
                         pdfExporter = container.pdfExporter,
                         appInfo = container.appInfo,
+                        prepareReaderModel = PrepareReaderModelUseCase(
+                            parse = container.markwonRenderer::parseForReader,
+                            headings = container.parseMarkdownHeadingsUseCase,
+                            inlineText = container.markwonRenderer::readerInlineText,
+                        ),
                     ) as T
                 }
             }

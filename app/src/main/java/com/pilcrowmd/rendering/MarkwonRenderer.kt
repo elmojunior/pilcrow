@@ -16,6 +16,7 @@ import io.noties.markwon.Markwon
 import io.noties.markwon.MarkwonConfiguration
 import io.noties.markwon.RenderProps
 import io.noties.markwon.core.CorePlugin
+import io.noties.markwon.ext.latex.JLatexMathNode
 import io.noties.markwon.ext.latex.JLatexMathPlugin
 import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
 import io.noties.markwon.ext.tables.TablePlugin
@@ -31,6 +32,7 @@ import io.noties.markwon.syntax.SyntaxHighlightPlugin
 import io.noties.prism4j.GrammarLocator
 import io.noties.prism4j.Prism4j
 import org.commonmark.node.Code
+import org.commonmark.node.Node
 import java.util.concurrent.ForkJoinPool
 
 /**
@@ -146,6 +148,23 @@ class MarkwonRenderer(
             }
         }
     }
+
+    // M-172: the reader's whole-document parse runs off Main, on an instance of its OWN. Markwon's
+    // inline processors are stateful, so this instance must never parse concurrently with anything
+    // (the pre-warm below, the export, a second reader parse) — hence a dedicated instance and the
+    // lock. The parse tree does not depend on the colour scheme or the maths size (those are render
+    // time), so the one Dark-built instance serves every theme and scale.
+    private val readerParseMarkwon: Markwon by lazy { buildPilcrowMarkwon(context) }
+
+    /** Parse [content] for the reader, with the reader's full plugin chain. Thread-safe; blocking. */
+    fun parseForReader(content: String): Node = synchronized(readerParseMarkwon) { readerParseMarkwon.parse(content) }
+
+    /**
+     * How the TOC reads an inline node of [parseForReader]'s tree: an inline formula (`$…$` or `$$…$$`)
+     * as its source without the delimiters, so `## The $O(n)$ bound` lists as "The O(n) bound".
+     * Anything else: null, read through its children.
+     */
+    fun readerInlineText(node: Node): String? = (node as? JLatexMathNode)?.latex()
 
     // The font pre-warm (see init) runs on this thread. Retained ONLY so a test can deterministically
     // await it ([awaitFontPreWarm]). Production never joins it: the warm-up stays fully asynchronous.

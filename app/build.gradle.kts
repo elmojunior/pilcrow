@@ -36,8 +36,8 @@ android {
         applicationId = "com.pilcrowmd"
         minSdk = 26
         targetSdk = 36
-        versionCode = 14
-        versionName = "1.0.13"
+        versionCode = 15
+        versionName = "1.0.14"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -54,6 +54,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            // A test build installs beside the Play app (com.pilcrowmd) instead of replacing it, and
+            // shows as "PilcrowMD debug" (src/debug/res). Release keeps the bare id. NEW-110.
+            applicationIdSuffix = ".debug"
+        }
         release {
             // R8 runs in NO-OP mode (proguard-rules.pro: -dontshrink -dontobfuscate -dontoptimize):
             // code is byte-identical to minify-off, but R8 emits the mapping file into the AAB's
@@ -374,7 +379,7 @@ tasks.register("marketingScreenshots") {
 // ---------------------------------------------------------------------------
 tasks.matching { it.name == "testDebugUnitTest" }.configureEach {
     (this as Test).useJUnit {
-        excludeCategories("com.pilcrowmd.testing.MainDispatcherSuite")
+        excludeCategories("com.pilcrowmd.testing.MainDispatcherSuite", "com.pilcrowmd.testing.LargeDocumentSuite")
     }
 }
 
@@ -399,8 +404,42 @@ val testMainDispatcherDebug by tasks.registering(Test::class) {
 // CI (`testDebugUnitTest`, 2026-09-28) and about 2 locally; 20 minutes is four times the CI figure,
 // so a slow runner never trips it. Scoped by name: a long run that has its own limit, such as a
 // nightly fuzz task, is not capped here.
+//
+// The heap (M-396): on Gradle's 512 MB default the suite held 509 MB after GC on main (measured
+// 2026-10-10), so an `OutOfMemoryError` hit whichever large screenshot test the class order put
+// last; PR #381 failed CI twice that way in a test it does not touch. 1 GB is twice the measured
+// peak; the 3 GB in gradle.properties is the daemon's, not the test JVM's. `UnitTestHeapTest` fails
+// if this is lost.
 tasks.withType<Test>().matching {
-    it.name in setOf("testDebugUnitTest", "testReleaseUnitTest", "testMainDispatcherDebug")
+    it.name in setOf("testDebugUnitTest", "testReleaseUnitTest", "testMainDispatcherDebug", "testLargeDocumentDebug")
 }.configureEach {
     timeout.set(Duration.ofMinutes(20))
+    maxHeapSize = "1g"
+}
+
+// ---------------------------------------------------------------------------
+// M-179 memory tests, in a JVM with a phone-sized heap.
+//
+// *** @Category(LargeDocumentSuite::class) -> testLargeDocumentDebug. Excluded from ***
+// *** testDebugUnitTest. One fresh JVM per test class.                           ***
+//
+// THE HEAP: 356 MB = the S24+'s growth limit (268,435,456 bytes, M-179) + about 100 MB that
+// Robolectric and Compose hold before a test allocates anything (measured: 97 MB used after
+// Robolectric start, 101 MB after composing the reader). So the headroom a test gets is roughly the
+// phone's. It is NOT a device simulation: HotSpot's object layout differs from ART's (a parsed
+// commonmark tree measured ~9 bytes per source char here), so a pass here is evidence, and the
+// phone run in the design note is still the authority.
+//
+// In the canonical local gate AND in CI, like testMainDispatcherDebug.
+// ---------------------------------------------------------------------------
+val testLargeDocumentDebug by tasks.registering(Test::class) {
+    group = "verification"
+    description = "Runs @Category(LargeDocumentSuite) classes (M-179) in JVMs with a phone-sized heap."
+    val base = tasks.named<Test>("testDebugUnitTest")
+    dependsOn(base)
+    testClassesDirs = files({ base.get().testClassesDirs })
+    classpath = files({ base.get().classpath })
+    useJUnit { includeCategories("com.pilcrowmd.testing.LargeDocumentSuite") }
+    maxHeapSize = "356m"
+    forkEvery = 1
 }

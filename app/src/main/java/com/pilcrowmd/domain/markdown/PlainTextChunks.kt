@@ -42,29 +42,39 @@ object PlainTextChunks {
     /** The same split with the forced-seam flag per piece, for the painter. */
     fun pieces(content: String, maxChunkLines: Int = MAX_CHUNK_LINES): List<Piece> {
         if (content.isEmpty()) return emptyList()
+        // Walks the lines in place (M-179): `split('\n')` first would hold every line of the file as
+        // its own String at once, before a single chunk exists. Each chunk is ONE substring of [content].
         val chunks = mutableListOf<Piece>()
-        val current = StringBuilder()
+        var chunkStart = 0
+        var lineStart = 0
         var currentLines = 0
         var lastLineBlank = false
         var forcedBefore = false
-        for (line in content.split('\n')) {
+        while (true) {
+            val newline = content.indexOf('\n', lineStart)
+            val lineEnd = if (newline < 0) content.length else newline
             // Break after any blank line once past the target, INCLUDING between two blanks:
             // both sides of such a seam are empty space, so it stays invisible, and
             // an all-blank file still chunks instead of becoming one giant TextView. A run with no
             // blank line is cut at the cap; that seam is visible, so the piece is marked forced.
             val atBlank = currentLines >= TARGET_CHUNK_LINES && lastLineBlank
             if (atBlank || currentLines >= maxChunkLines) {
-                chunks += Piece(current.toString(), forcedBefore)
-                current.setLength(0)
+                chunks += Piece(content.substring(chunkStart, lineStart - 1), forcedBefore) // minus the seam's '\n'
+                chunkStart = lineStart
                 currentLines = 0
                 forcedBefore = !atBlank
             }
-            if (currentLines > 0) current.append('\n')
-            current.append(line)
             currentLines++
-            lastLineBlank = line.isBlank()
+            lastLineBlank = isBlank(content, lineStart, lineEnd)
+            if (newline < 0) break
+            lineStart = newline + 1
         }
-        chunks += Piece(current.toString(), forcedBefore)
+        chunks += Piece(content.substring(chunkStart), forcedBefore)
         return chunks
+    }
+
+    private fun isBlank(content: String, start: Int, end: Int): Boolean {
+        for (i in start until end) if (!content[i].isWhitespace()) return false
+        return true
     }
 }

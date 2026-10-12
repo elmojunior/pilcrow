@@ -23,9 +23,9 @@ import kotlinx.coroutines.withTimeout
  * end-to-end on a device:
  *
  *   1. open a throwaway test .md in Pilcrow (it becomes the "last file");
- *   2. `adb shell am broadcast -n com.pilcrowmd/.debug.DebugWalReceiver`
+ *   2. `adb shell am broadcast -n com.pilcrowmd.debug/com.pilcrowmd.debug.DebugWalReceiver`
  *      → stages the file's content (plus a marker) to the WAL and truncates the file on disk;
- *   3. `adb shell am force-stop com.pilcrowmd`  (kill in the "mid-write" window);
+ *   3. `adb shell am force-stop com.pilcrowmd.debug`  (kill in the "mid-write" window);
  *   4. relaunch Pilcrow → launch-time recovery restores the file;
  *   5. reopen the file → content is intact, with the marker appended (proof recovery ran).
  */

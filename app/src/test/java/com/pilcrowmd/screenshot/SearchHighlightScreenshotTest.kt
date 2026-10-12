@@ -19,6 +19,7 @@ import com.github.takahirom.roborazzi.captureRoboImage
 import com.pilcrowmd.domain.usecase.ParseMarkdownHeadingsUseCase
 import com.pilcrowmd.domain.usecase.SearchMarkdownUseCase
 import com.pilcrowmd.rendering.warmedMarkwonRenderer
+import com.pilcrowmd.testing.readerModelFor
 import com.pilcrowmd.ui.components.MarkdownPreview
 import com.pilcrowmd.ui.theme.DarkColorScheme
 import com.pilcrowmd.ui.theme.LocalMDColors
@@ -68,7 +69,7 @@ class SearchHighlightScreenshotTest {
             ) {
                 CompositionLocalProvider(LocalMDColors provides DarkColorScheme) {
                     MarkdownPreview(
-                        content = content,
+                        model = remember { renderer.readerModelFor(content) },
                         renderer = renderer,
                         searchMatches = matches,
                         currentMatchIndex = 1, // focus the 2nd "free"

@@ -14,22 +14,26 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.automirrored.outlined.Redo
+import androidx.compose.material.icons.automirrored.outlined.Toc
 import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.RemoveRedEye
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Text
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,7 +41,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
@@ -50,11 +53,10 @@ import com.pilcrowmd.viewmodel.ViewMode
 /**
  * Top toolbar (44dp) with a 1px bottom border (toolbarBorder token).
  *
- * Left: segmented Reader/Editor toggle — two icon buttons (eye = Reader,
- * </> = Editor); the active mode is highlighted.
- * Right: explicit Save (no auto-save), Search, TOC, Export/Undo/Redo and
- * Close. Opening/switching a file is done from the Home screen: the
- * folder icon was removed so the remaining actions can hit a 42dp touch target
+ * Left: one mode button showing the action (Edit in Read mode, Read in Edit mode).
+ * Right: Search, TOC, then explicit Save (Edit mode only; no auto-save) or Export PDF (Read mode
+ * only), Undo/Redo (Edit mode), overflow and Close. Opening/switching a file is done from the
+ * Home screen: the folder icon was removed so the remaining actions can hit a 42dp touch target
  * within phone width; Close returns to Home, where Open lives.
  */
 @Composable
@@ -92,27 +94,12 @@ fun PilcrowToolbar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            // Segmented Reader/Editor toggle (left)
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(c.secondarySurface),
-            ) {
-                SegmentIcon(
-                    icon = Icons.Outlined.RemoveRedEye,
-                    contentDescription = "Reader",
-                    selected = currentMode == ViewMode.READER,
-                    onClick = { onModeSelected(ViewMode.READER) },
-                )
-                SegmentIcon(
-                    icon = Icons.Outlined.Code,
-                    contentDescription = "Editor",
-                    selected = currentMode == ViewMode.EDITOR,
-                    onClick = { onModeSelected(ViewMode.EDITOR) },
-                )
-            }
+            // One mode button (left): shows the action, not the state. Read mode offers Edit, Edit mode
+            // offers Read; long-press shows the same word.
+            ModeButton(currentMode = currentMode, onModeSelected = onModeSelected)
 
-            // Actions (right): Search + TOC + Save + Export PDF + Undo + Redo, then Close.
+            // Actions (right): Search + TOC, then Save (Edit only) or Export PDF (Read only), Undo + Redo,
+            // overflow, Close.
             // Icons are 22dp glyphs (PDF export 24dp so its "PDF" lettering stays legible) inside 42dp
             // touch targets (glyph bumped from 18dp so the icons read visibly larger; target
             // stays 42dp). The Open folder icon was removed (open from Home) so the full
@@ -126,22 +113,25 @@ fun PilcrowToolbar(
                     enabled = !isSaving,
                 )
                 ActionIcon(
-                    icon = Icons.AutoMirrored.Outlined.MenuBook,
+                    icon = Icons.AutoMirrored.Outlined.Toc,
                     contentDescription = "Table of contents",
                     onClick = onTOC,
                     enabled = !isSaving,
                 )
-                ActionIcon(
-                    icon = Icons.Outlined.Save,
-                    contentDescription = if (isSaving) "Saving" else "Save",
-                    onClick = onSave,
-                    enabled = !isSaving,
-                    tint = if (isSaving) {
-                        c.secondaryText
-                    } else {
-                        c.primaryText
-                    },
-                )
+                // Save (editor mode only). "Save a copy" stays in the overflow menu in both modes.
+                if (currentMode == ViewMode.EDITOR) {
+                    ActionIcon(
+                        icon = Icons.Outlined.Save,
+                        contentDescription = if (isSaving) "Saving" else "Save",
+                        onClick = onSave,
+                        enabled = !isSaving,
+                        tint = if (isSaving) {
+                            c.secondaryText
+                        } else {
+                            c.primaryText
+                        },
+                    )
+                }
                 // Export PDF button (preview mode only) — custom PDF icon with brand-purple badge.
                 if (currentMode == ViewMode.READER) {
                     PdfExportActionIcon(
@@ -196,9 +186,40 @@ fun PilcrowToolbar(
 }
 
 /**
- * A toolbar action button sized to match the segment toggle: a 42dp touch target
- * (up from 36dp for reliable finger taps) with a 22dp icon (up
- * from 18dp so icons read visibly larger), so every icon in the bar reads at the same scale.
+ * The single Reader/Editor switch. It shows the action it performs: [Icons.Outlined.EditNote] "Edit"
+ * in Read mode, [Icons.AutoMirrored.Outlined.MenuBook] "Read" in Edit mode. 42dp target, 22dp accent
+ * glyph; a long-press tooltip carries the same word for sighted users (TalkBack reads the label).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ModeButton(currentMode: ViewMode, onModeSelected: (ViewMode) -> Unit) {
+    val c = mdColors()
+    val editing = currentMode == ViewMode.EDITOR
+    val label = if (editing) "Read" else "Edit"
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+        tooltip = {
+            PlainTooltip(containerColor = c.secondarySurface, contentColor = c.primaryText) { Text(label) }
+        },
+        state = rememberTooltipState(),
+    ) {
+        IconButton(
+            onClick = { onModeSelected(if (editing) ViewMode.READER else ViewMode.EDITOR) },
+            modifier = Modifier.size(42.dp),
+        ) {
+            Icon(
+                imageVector = if (editing) Icons.AutoMirrored.Outlined.MenuBook else Icons.Outlined.EditNote,
+                contentDescription = label,
+                tint = c.accent,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+    }
+}
+
+/**
+ * A toolbar action button: a 42dp touch target (up from 36dp for reliable finger taps) with a 22dp
+ * icon (up from 18dp so icons read visibly larger), so every icon in the bar reads at the same scale.
  */
 @Composable
 private fun ActionIcon(
@@ -304,37 +325,6 @@ private fun OverflowMenu(
                     },
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun SegmentIcon(icon: ImageVector, contentDescription: String, selected: Boolean, onClick: () -> Unit) {
-    val c = mdColors()
-    // Active mode = a filled ACCENT chip with an on-accent glyph; inactive = transparent with a muted
-    // glyph. The previous "selected = primaryBackground inset on a secondarySurface pill" was two
-    // near-identical darks — imperceptible to an external tester (QA #4). The accent fill makes the
-    // current mode unmistakable. Colours from the token layer only (Safeguard 4).
-    Box(
-        modifier = Modifier
-            .size(42.dp)
-            .padding(2.dp)
-            .clip(RoundedCornerShape(4.dp))
-            .background(if (selected) c.accent else Color.Transparent),
-        contentAlignment = Alignment.Center,
-    ) {
-        IconButton(onClick = onClick, modifier = Modifier.size(38.dp)) {
-            Icon(
-                imageVector = icon,
-                // Append the selected state so TalkBack announces the active mode (accessibility).
-                contentDescription = if (selected) "$contentDescription, selected" else contentDescription,
-                tint = if (selected) {
-                    c.onAccent
-                } else {
-                    c.secondaryText
-                },
-                modifier = Modifier.size(22.dp),
-            )
         }
     }
 }

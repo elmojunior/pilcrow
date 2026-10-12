@@ -65,6 +65,8 @@ object RecyclerAdapterEntries {
      * @param details Which `<details>` sections are open (M-161); every entry is wrapped so a block
      *   inside a closed section takes no space. Null leaves every block showing (the PDF export).
      * @param codeHighlighting Colours bash/TypeScript/Rust/Ruby blocks (M-136); null leaves them plain
+     * @param seams Where the pieces of a split paragraph meet (M-328), so they draw with no gap; null
+     *   draws every paragraph with its usual gap (the PDF keeps the paragraph whole)
      * @return MarkwonAdapter ready to be set on a RecyclerView
      */
     @Suppress("LongParameterList") // The reader's settings, forwarded to the entries.
@@ -79,6 +81,7 @@ object RecyclerAdapterEntries {
         wrapCodeLines: Boolean = false,
         details: DetailsState? = null,
         codeHighlighting: CodeHighlighting? = null,
+        seams: ParagraphSeamState? = null,
     ): MarkwonAdapter {
         fun <N : org.commonmark.node.Node, H : MarkwonAdapter.Holder> hideable(entry: MarkwonAdapter.Entry<N, H>) =
             if (details == null) entry else HideableEntry(entry, details)
@@ -87,7 +90,7 @@ object RecyclerAdapterEntries {
         // paragraphs, lists, blockquotes etc. match the reading design — NOT the unstyled SimpleEntry default.
         // The prose entry also applies search highlights at bind time.
         val adapter = MarkwonAdapter.builder(
-            hideable(ProseBlockEntry(context, fontScale, fontSet, searchHighlight, colorScheme, details)),
+            hideable(ProseBlockEntry(context, fontScale, fontSet, searchHighlight, colorScheme, details, seams)),
         )
             // Register custom entry for YAML frontmatter
             // Must come before generic FencedCodeBlockEntry so "yaml" blocks route here first

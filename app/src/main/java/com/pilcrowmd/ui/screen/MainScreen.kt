@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 pleree
 
+@file:OptIn(ExperimentalLayoutApi::class) // isImeVisible, for the caret reveal
+
 package com.pilcrowmd.ui.screen
 
 import android.app.Activity
@@ -23,6 +25,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -32,6 +35,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -61,6 +65,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.pilcrowmd.domain.markdown.PlainReason
+import com.pilcrowmd.domain.markdown.ReaderModel
 import com.pilcrowmd.domain.model.RenderMode
 import com.pilcrowmd.domain.model.ThemeMode
 import com.pilcrowmd.rendering.MarkwonRenderer
@@ -159,9 +165,13 @@ fun MainScreen(
     // Warm-intent file waiting on the unsaved-changes prompt
     val pendingOpenUri = viewModel.pendingOpenUri.collectAsStateWithLifecycle()
 
+    // What the reader paints, prepared off Main by the ViewModel (M-172); null while it is prepared.
+    val readerModel = viewModel.readerModel.collectAsStateWithLifecycle()
+
     // TOC state
     val headings = viewModel.headings.collectAsStateWithLifecycle()
     val headingJump = viewModel.headingJump.collectAsStateWithLifecycle()
+    val caretReveal = viewModel.caretReveal.collectAsStateWithLifecycle()
 
     // Export result feedback (success/error) — surfaced via the centered status toast below.
     val exportState = viewModel.exportState.collectAsStateWithLifecycle()
@@ -692,6 +702,11 @@ fun MainScreen(
                         )
                     }
 
+                    // M-179: a document the reader cannot format is shown as plain text — say so,
+                    // rather than let it look like the Markdown was lost.
+                    val plainNotice = plainFallbackNoticeText((readerModel.value as? ReaderModel.Plain)?.reason)
+                    if (mode.value == ViewMode.READER && plainNotice != null) PlainFallbackNotice(plainNotice)
+
                     // Conditionally render search bar when visible (works in both Reader and Editor modes)
                     if (searchVisible.value) {
                         SearchBar(
@@ -822,7 +837,9 @@ fun MainScreen(
                                     // hidden behind the keyboard with no room to scroll above it.
                                     MarkdownPreview(
                                         modifier = Modifier.fillMaxSize().imePadding(),
-                                        content = currentDocument.value!!.content,
+                                        model = readerModel.value?.takeIf {
+                                            it.content === currentDocument.value!!.content
+                                        },
                                         renderer = renderer,
                                         fontScale = previewFontScale.value,
                                         fontSet = fontSet,
@@ -840,7 +857,10 @@ fun MainScreen(
                                         jumpPosition = headingJump.value?.position ?: -1,
                                         jumpSeq = headingJump.value?.seq ?: 0,
                                         onJumpHandled = { viewModel.onHeadingJumpHandled(it) },
-                                        renderMode = renderMode.value,
+                                        caretRevealBlock = caretReveal.value?.blockIndex ?: -1,
+                                        caretRevealSeq = caretReveal.value?.seq ?: 0,
+                                        onCaretRevealHandled = { viewModel.onCaretRevealHandled(it) },
+                                        imeVisible = WindowInsets.isImeVisible,
                                         documentUri = currentDocument.value!!.uri,
                                         imageAccessKey = imageFolder?.value?.accessKey.orEmpty(),
                                         onImageTap = { imageFolderViewModel?.requestFolderAccess() },
@@ -1044,6 +1064,31 @@ private fun TransientBanner(
 }
 
 private const val TRANSIENT_BANNER_DISABLED_ALPHA = 0.5f
+
+/**
+ * The notice for a document the reader shows as plain text for [reason] (M-179), or null for none: the
+ * user's own plain view, and a document nested too deeply to render (NEW-11, silent as it always was).
+ */
+internal fun plainFallbackNoticeText(reason: PlainReason?): String? = when (reason) {
+    PlainReason.TOO_LARGE -> "This document is too large to format on this device, so it is shown as plain text."
+    PlainReason.UNRENDERABLE -> "This document could not be formatted, so it is shown as plain text."
+    PlainReason.PLAIN_TEXT, PlainReason.TOO_DEEP, null -> null
+}
+
+/** Why the reader shows a Markdown document as plain text (M-179). Informational; token colours only. */
+@Composable
+private fun PlainFallbackNotice(text: String) {
+    val c = mdColors()
+    Text(
+        text = text,
+        color = c.secondaryText,
+        fontSize = 13.sp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(c.secondarySurface)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    )
+}
 
 /**
  * Persistent bar shown on every screen while stranded WAL slots exist (the escape hatch) — saves

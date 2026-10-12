@@ -52,7 +52,7 @@ class DetailsReaderTest {
         list.layoutManager = LinearLayoutManager(activity)
         // The reader installs this before the details decoration (Preview.kt): its tail space after the
         // last block.
-        if (tailSpace) applyReaderBottomSpacer(list)
+        if (tailSpace) applyReaderBottomSpacer(list, TAIL_BODY_LINE_PX)
         list.setTag(R.id.details_state, state)
         val decoration = DetailsDecoration(activity, state, scheme)
         list.addItemDecoration(decoration)
@@ -248,5 +248,8 @@ class DetailsReaderTest {
     private companion object {
         /** The close block's 8 dp padding less the box's 4 dp gap, at Robolectric's 1 px per dp. */
         const val CLOSE_GAP_PX = 4
+
+        /** A real tail (two lines = 80 px): at 0 the tail is absent and M-262 could not fail. */
+        const val TAIL_BODY_LINE_PX = 40
     }
 }
