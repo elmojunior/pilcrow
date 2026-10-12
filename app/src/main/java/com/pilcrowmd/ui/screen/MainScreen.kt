@@ -84,6 +84,7 @@ import com.pilcrowmd.ui.components.PilcrowToolbar
 import com.pilcrowmd.ui.components.SearchBar
 import com.pilcrowmd.ui.components.SettingsScreen
 import com.pilcrowmd.ui.components.WelcomeScreen
+import com.pilcrowmd.tts.PilcrowTtsManager
 import com.pilcrowmd.ui.theme.DarkColorScheme
 import com.pilcrowmd.ui.theme.FontSets
 import com.pilcrowmd.ui.theme.LightColorScheme
@@ -182,6 +183,22 @@ fun MainScreen(
     // drawer — only the swipe gesture did.)
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+
+    // System Text-To-Speech manager for Read Aloud in overflow menu
+    val ttsManager = remember(context) { PilcrowTtsManager(context) }
+    val isTtsSpeaking = ttsManager.isSpeaking.collectAsStateWithLifecycle()
+
+    DisposableEffect(ttsManager) {
+        onDispose {
+            ttsManager.shutdown()
+        }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(currentDocument.value) {
+        if (currentDocument.value == null) {
+            ttsManager.stop()
+        }
+    }
 
     // Unsaved-changes guard for the Close (X) action. rememberSaveable so the dialog survives a
     // config-change recreate (rotation) — otherwise the user's save/discard decision point silently
@@ -632,6 +649,17 @@ fun MainScreen(
                             }
                         },
                         onSaveACopy = { launchSaveAs() },
+                        isTtsSpeaking = isTtsSpeaking.value,
+                        onToggleTts = {
+                            if (isTtsSpeaking.value) {
+                                ttsManager.stop()
+                            } else {
+                                val content = currentDocument.value?.content.orEmpty()
+                                if (content.isNotBlank()) {
+                                    ttsManager.speak(content)
+                                }
+                            }
+                        },
                         // Quiet .txt render toggle: item present only for .txt documents;
                         // label names the mode to switch TO. Viewing-only — never touches bytes.
                         plainToggleLabel = if (plainToggleAvailable.value) {
@@ -648,6 +676,7 @@ fun MainScreen(
                             null
                         },
                         onClose = {
+                            ttsManager.stop()
                             // Safeguard against silent data loss: prompt if there are unsaved edits.
                             if (currentDocument.value?.dirty == true) {
                                 showCloseConfirm = true

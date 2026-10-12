@@ -78,6 +78,8 @@ fun PilcrowToolbar(
     onTogglePlainView: () -> Unit = {},
     // M-93: present only when a folder grant would show the note's pictures.
     onShowFolderPictures: (() -> Unit)? = null,
+    isTtsSpeaking: Boolean = false,
+    onToggleTts: (() -> Unit)? = null,
 ) {
     val c = mdColors()
     Column(
@@ -155,13 +157,15 @@ fun PilcrowToolbar(
                         onClick = onRedo,
                     )
                 }
-                // Overflow menu (⋮) — hosts "Save a copy" + the .txt render toggle. Sits left of Close.
+                // Overflow menu (⋮) — hosts "Save a copy" + TTS + the .txt render toggle. Sits left of Close.
                 OverflowMenu(
                     onSaveACopy = onSaveACopy,
                     enabled = !isSaving,
                     plainToggleLabel = plainToggleLabel,
                     onTogglePlainView = onTogglePlainView,
                     onShowFolderPictures = onShowFolderPictures,
+                    isTtsSpeaking = isTtsSpeaking,
+                    onToggleTts = onToggleTts,
                 )
                 // Settings moved off the toolbar to the Welcome screen.
                 // Close (X) — always the rightmost action.
@@ -288,6 +292,8 @@ private fun OverflowMenu(
     plainToggleLabel: String? = null,
     onTogglePlainView: () -> Unit = {},
     onShowFolderPictures: (() -> Unit)? = null,
+    isTtsSpeaking: Boolean = false,
+    onToggleTts: (() -> Unit)? = null,
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
@@ -307,6 +313,15 @@ private fun OverflowMenu(
                     onSaveACopy()
                 },
             )
+            if (onToggleTts != null) {
+                DropdownMenuItem(
+                    text = { Text(if (isTtsSpeaking) "Parar" else "Ler em voz alta") },
+                    onClick = {
+                        expanded = false
+                        onToggleTts()
+                    },
+                )
+            }
             if (plainToggleLabel != null) {
                 DropdownMenuItem(
                     text = { Text(plainToggleLabel) },
